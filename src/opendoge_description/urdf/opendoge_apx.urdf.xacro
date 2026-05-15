@@ -1,0 +1,92 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="opendoge_apx">
+  <!-- Base -->
+  <link name="base_link">
+    <visual>
+      <geometry>
+        <box size="0.3 0.15 0.1"/>
+      </geometry>
+    </visual>
+  </link>
+
+  <!-- IMU -->
+  <link name="imu_link"/>
+  <joint name="imu_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="imu_link"/>
+    <origin xyz="0 0 0.05" rpy="0 0 0"/>
+  </joint>
+
+  <!-- Simple 12-DOF leg layout: FL/FR/HL/HR -->
+  <xacro:macro name="leg" params="prefix x y z yaw pitch roll">
+    <link name="${prefix}_hip_link"/>
+    <joint name="${prefix}_hip_joint" type="revolute">
+      <parent link="base_link"/>
+      <child link="${prefix}_hip_link"/>
+      <origin xyz="${x} ${y} ${z}" rpy="${roll} ${pitch} ${yaw}"/>
+      <axis xyz="0 1 0"/>
+      <limit lower="-1.57" upper="1.57" effort="50" velocity="10"/>
+    </joint>
+
+    <link name="${prefix}_thigh_link"/>
+    <joint name="${prefix}_thigh_joint" type="revolute">
+      <parent link="${prefix}_hip_link"/>
+      <child link="${prefix}_thigh_link"/>
+      <origin xyz="0 0 -0.05" rpy="0 0 0"/>
+      <axis xyz="1 0 0"/>
+      <limit lower="-2.0" upper="2.0" effort="50" velocity="10"/>
+    </joint>
+
+    <link name="${prefix}_knee_link"/>
+    <joint name="${prefix}_knee_joint" type="revolute">
+      <parent link="${prefix}_thigh_link"/>
+      <child link="${prefix}_knee_link"/>
+      <origin xyz="0 0 -0.2" rpy="0 0 0"/>
+      <axis xyz="1 0 0"/>
+      <limit lower="-2.5" upper="0.0" effort="50" velocity="10"/>
+    </joint>
+  </xacro:macro>
+
+  <!-- Front Left -->
+  <xacro:leg prefix="fl" x="0.15" y="0.075" z="0.0" roll="0" pitch="0" yaw="0"/>
+  <!-- Front Right -->
+  <xacro:leg prefix="fr" x="0.15" y="-0.075" z="0.0" roll="0" pitch="0" yaw="0"/>
+  <!-- Hind Left -->
+  <xacro:leg prefix="hl" x="-0.15" y="0.075" z="0.0" roll="0" pitch="0" yaw="0"/>
+  <!-- Hind Right -->
+  <xacro:leg prefix="hr" x="-0.15" y="-0.075" z="0.0" roll="0" pitch="0" yaw="0"/>
+
+  <!-- ros2_control placeholder: actual hardware mapping defined in YAML -->
+  <ros2_control name="OpendogeHardware" type="system">
+    <hardware>
+      <plugin>motor_control_interface/MotorHardware</plugin>
+      <param name="can_interface">can0</param>
+      <param name="master_id">253</param>
+    </hardware>
+
+    <!-- Joint list must match controllers.yaml & policy base.yaml -->
+    <xacro:macro name="register_joint" params="joint_name motor_id">
+      <joint name="${joint_name}">
+        <param name="motor_id">${motor_id}</param>
+        <command_interface name="effort"/>
+        <state_interface name="position"/>
+        <state_interface name="effort"/>
+      </joint>
+    </xacro:macro>
+
+    <!-- Placeholder motor IDs; update to real mapping -->
+    <xacro:register_joint joint_name="fl_hip_joint" motor_id="1"/>
+    <xacro:register_joint joint_name="fl_thigh_joint" motor_id="2"/>
+    <xacro:register_joint joint_name="fl_knee_joint" motor_id="3"/>
+    <xacro:register_joint joint_name="fr_hip_joint" motor_id="4"/>
+    <xacro:register_joint joint_name="fr_thigh_joint" motor_id="5"/>
+    <xacro:register_joint joint_name="fr_knee_joint" motor_id="6"/>
+    <xacro:register_joint joint_name="hl_hip_joint" motor_id="7"/>
+    <xacro:register_joint joint_name="hl_thigh_joint" motor_id="8"/>
+    <xacro:register_joint joint_name="hl_knee_joint" motor_id="9"/>
+    <xacro:register_joint joint_name="hr_hip_joint" motor_id="10"/>
+    <xacro:register_joint joint_name="hr_thigh_joint" motor_id="11"/>
+    <xacro:register_joint joint_name="hr_knee_joint" motor_id="12"/>
+  </ros2_control>
+</robot>
+

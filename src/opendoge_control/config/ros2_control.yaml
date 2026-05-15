@@ -1,0 +1,50 @@
+ros2_control:
+  ros__parameters:
+    update_rate: 500
+
+    opendoge_apx_system:
+      type: system
+      hardware:
+        plugin: motor_control_interface/MotorHardware
+        param:
+          can_interface: can0
+          master_id: 253
+
+      joints:
+        - name: fl_hip_joint
+          command_interfaces: [effort]
+          state_interfaces: [position, effort]
+        - name: fl_thigh_joint
+          command_interfaces: [effort]
+          state_interfaces: [position, effort]
+        - name: fl_knee_joint
+          command_interfaces: [effort]
+          state_interfaces: [position, effort]
+        - name: fr_hip_joint
+          command_interfaces: [effort]
+          state_interfaces: [position, effort]
+        - name: fr_thigh_joint
+          command_interfaces: [effort]
+          state_interfaces: [position, effort]
+        - name: fr_knee_joint
+          command_interfaces: [effort]
+          state_interfaces: [position, effort]
+        - name: hl_hip_joint
+          command_interfaces: [effort]
+          state_interfaces: [position, effort]
+        - name: hl_thigh_joint
+          command_interfaces: [effort]
+          state_interfaces: [position, effort]
+        - name: hl_knee_joint
+          command_interfaces: [effort]
+          state_interfaces: [position, effort]
+        - name: hr_hip_joint
+          command_interfaces: [effort]
+          state_interfaces: [position, effort]
+        - name: hr_thigh_joint
+          command_interfaces: [effort]
+          state_interfaces: [position, effort]
+        - name: hr_knee_joint
+          command_interfaces: [effort]
+          state_interfaces: [position, effort]
+
