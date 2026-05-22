@@ -407,3 +407,95 @@ USB2CAN 板已确认是正式信号转发板，但框架里还缺少生产级链
 8. 最后接入 RL 策略和 FSM。
 
 当前最关键的第一缺口是：缺少正式电机硬件接口和它依赖的 EL05/USB2CAN 协议实现。
+
+## 9. 工具和工作区整理记录
+
+用户确认：EL05 是灵足 RobStride/RS 电机，OpenDoge 本项目没有使用 LK/领控电机。
+
+因此后续所有硬件工具和正式驱动只保留 EL05/RobStride 路线。`pd02_motor_driver_test` 只作为交互式菜单和上机流程参考，不引入它的 LK/Lingkong 分支、依赖或电机模型。
+
+已新增：
+
+- `.gitignore`
+  - 忽略 `build/`、`install/`、`log/`、`__pycache__/` 等工作区生成物。
+- `requirements.txt`
+  - 记录供应商 Python 示例所需的 `python-can`。
+  - OpenDoge 新增的 EL05 菜单工具使用 Python 内置 SocketCAN，不强依赖 `python-can`。
+- `scripts/setup_can.sh`
+  - 启动正式 USB2CAN 信号转发板暴露的 SocketCAN 设备。
+  - 默认用法：`sudo ./scripts/setup_can.sh can0 1000000`。
+- `tools/README.md`
+  - 说明工具目录结构和“只做 EL05/RobStride，不做 LK”的规则。
+- `tools/el05/README.md`
+  - 说明 OpenDoge EL05 交互式菜单的使用方式和安全注意事项。
+- `tools/el05/el05_motor_menu.py`
+  - 面向 EL05/RobStride 的交互式菜单。
+  - 直接使用 Linux raw SocketCAN，不依赖当前缺失的 ROS 包。
+  - 当前菜单包含：
+    - 列出电机 ID。
+    - 读取 `0x7019 mechPos` 和 `0x701B mechVel` 参数。
+    - 监听通信类型 2 反馈帧。
+    - 使能电机。
+    - 停止电机。
+    - 清除故障。
+    - 写入 `0x7005 run_mode = 0` 运控模式。
+    - 单电机小幅 jog。
+    - 设置机械零位。
+
+已更新：
+
+- `README.md`
+  - 按当前真实工作区状态重新整理。
+  - 明确当前缺失的 ROS 包：`motor_control_interface`、`robot_joint_controller`、`robot_msgs`、IMU 驱动。
+  - 明确正式电机链路：
+
+```text
+ROS2 / ros2_control -> MotorHardware -> SocketCAN(can0/can1/...) -> USB2CAN 信号转发板 -> EL05 CAN 总线
+```
+
+当前工具层已经能支撑“正式 USB2CAN 链路 + 单电机 EL05 验证”的下一步工作；ROS 正式闭环仍需补齐 C++ `MotorHardware` 和控制器/消息包。
+
+## 10. 构建验证记录
+
+已执行：
+
+```bash
+colcon list
+```
+
+当前可枚举 ROS 包：
+
+- `opendoge_bringup`
+- `opendoge_control`
+- `opendoge_description`
+- `opendoge_rl_node`
+
+已修正：
+
+- `src/opendoge_description/CMakeLists.txt`
+  - 移除不必要的 `find_package(xacro REQUIRED)` 构建期依赖。
+  - 移除不存在的 `meshes` 目录安装项。
+
+已验证通过：
+
+```bash
+colcon build --symlink-install --packages-select opendoge_description opendoge_control opendoge_bringup
+```
+
+结果：
+
+- `opendoge_description` 通过。
+- `opendoge_control` 通过。
+- `opendoge_bringup` 通过。
+
+仍然失败：
+
+```bash
+colcon build --symlink-install --packages-select opendoge_rl_node
+```
+
+失败原因：
+
+- 缺少 `robot_msgs` 包，CMake 找不到 `robot_msgsConfig.cmake`。
+
+因此当前工作区已经整理到“配置/描述/bringup 可构建，RL 节点等待消息包补齐”的状态。下一步若要全量构建，必须先补 `robot_msgs`，或者临时禁用/替换 `opendoge_rl_node` 的自定义消息依赖。

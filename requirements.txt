@@ -1,0 +1,4 @@
+# Optional Python dependencies for vendor/reference tools.
+# The OpenDoge EL05 interactive menu uses Python's built-in SocketCAN support
+# and does not require python-can.
+python-can>=4.0
