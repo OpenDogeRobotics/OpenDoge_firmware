@@ -488,14 +488,61 @@ colcon build --symlink-install --packages-select opendoge_description opendoge_c
 - `opendoge_control` 通过。
 - `opendoge_bringup` 通过。
 
-仍然失败：
+历史失败项：
 
 ```bash
 colcon build --symlink-install --packages-select opendoge_rl_node
 ```
 
-失败原因：
+当时失败原因：
 
 - 缺少 `robot_msgs` 包，CMake 找不到 `robot_msgsConfig.cmake`。
 
-因此当前工作区已经整理到“配置/描述/bringup 可构建，RL 节点等待消息包补齐”的状态。下一步若要全量构建，必须先补 `robot_msgs`，或者临时禁用/替换 `opendoge_rl_node` 的自定义消息依赖。
+后续已经将 `opendoge_rl_node` 改为标准 ROS2 消息，不再依赖 `robot_msgs`。
+
+## 11. RK3588 推理节点实现记录
+
+日期：2026-05-22
+
+已参考 `/tmp/sim2real-inference_code_ros2` 中 HighTorque 的 RKNN 推理节点结构，完成 OpenDoge 版本的推理桥接骨架：
+
+- `opendoge_rl_node` 输入：
+  - `/joint_state` (`sensor_msgs/msg/JointState`)：12 关节位置/速度反馈。
+  - `/imu` (`sensor_msgs/msg/Imu`)：机身姿态和角速度。
+  - `/joy` (`sensor_msgs/msg/Joy`)：deadman、standby、running、passive、estop 与 x/y/yaw 方向控制。
+  - `/cmd_vel` (`geometry_msgs/msg/Twist`)：可选速度命令入口。
+- `opendoge_rl_node` 输出：
+  - `/joint_target` (`sensor_msgs/msg/JointState`)：策略输出 POS 目标。
+  - `/rl_observation`、`/rl_action`：调试向量。
+- 节拍：
+  - `control_rate_hz=500`：底层电机控制目标频率，由后续电机桥接/控制器消费。
+  - `publish_rate_hz=200`：`/joint_target` 目标保持发布频率。
+  - `inference_rate_hz=50`：策略推理频率。
+- 参数文件：
+  - `src/opendoge_rl_node/config/opendoge_rl.yaml`
+- bringup：
+  - `src/opendoge_bringup/launch/bringup.launch.py` 已加入 `opendoge_rl_node`。
+- 当前推理后端：
+  - `policy_backend=none`：默认站姿/管线测试。
+  - `policy_backend=linear_csv`：轻量 CSV 线性后端，用于测试 observation 到 action 的数据链路。
+  - `policy_backend=rknn`：RK3588 RKNN 接入点；需在板端安装 Rockchip `rknnrt` 后补真实 NPU 推理调用。
+
+已验证：
+
+```bash
+colcon build --symlink-install --packages-select opendoge_rl_node
+colcon build --symlink-install
+timeout 5 ros2 launch opendoge_rl_node rl_node.launch.py
+```
+
+结果：
+
+- `opendoge_rl_node` 单包构建通过。
+- 当前 4 个 ROS 包全量构建通过。
+- launch 参数加载通过，节点正常启动并以 50 Hz / 200 Hz 配置运行；由于测试时没有真实 `/joint_state` 与 `/imu`，节点按预期输出超时告警并保持 passive。
+
+剩余工作：
+
+- 实现 RKNN 真实推理后端，加载 `.rknn` 模型并替换当前动作占位。
+- 实现 `/joint_target` 到 LCM/DDS 或 EL05 CAN 的正式桥接包。
+- 补齐 `motor_control_interface/MotorHardware` 与 `robot_joint_controller`，完成 500 Hz 电机控制闭环。

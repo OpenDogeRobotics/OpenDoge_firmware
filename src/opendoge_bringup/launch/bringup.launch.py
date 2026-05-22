@@ -13,6 +13,7 @@ def generate_launch_description():
     description_pkg = get_package_share_directory("opendoge_description")
     control_pkg = get_package_share_directory("opendoge_control")
     bringup_pkg = get_package_share_directory("opendoge_bringup")
+    rl_pkg = get_package_share_directory("opendoge_rl_node")
 
     xacro_file = os.path.join(description_pkg, "urdf", "opendoge_apx.urdf.xacro")
     robot_description_raw = xacro.process_file(xacro_file).toxml()
@@ -46,12 +47,20 @@ def generate_launch_description():
         output="screen",
     )
 
+    rl_node = Node(
+        package="opendoge_rl_node",
+        executable="rl_node",
+        name="opendoge_rl_node",
+        output="screen",
+        parameters=[os.path.join(rl_pkg, "config", "opendoge_rl.yaml")],
+    )
+
     return LaunchDescription(
         [
             DeclareLaunchArgument("use_sim_time", default_value="false", description="Use simulation (Gazebo) clock"),
             robot_state_publisher_node,
             controller_manager_node,
             robot_joint_controller_spawner,
+            rl_node,
         ]
     )
-

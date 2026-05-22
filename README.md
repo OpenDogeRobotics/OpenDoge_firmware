@@ -2,7 +2,7 @@
 
 适用：Linux / ROS2 Humble，四足机器人 **OpenDoge / opendoge-apx**。
 
-当前仓库是 ROS2 控制工作区骨架，已包含机器人描述、ros2_control 配置、bringup 配置、RL 占位节点和 EL05/USB2CAN 硬件工具。正式电机硬件接口、控制器和消息包仍需补齐，详见 [codex.md](codex.md)。
+当前仓库是 ROS2 控制工作区骨架，已包含机器人描述、ros2_control 配置、bringup 配置、RK3588 RL 推理桥接节点和 EL05/USB2CAN 硬件工具。正式电机硬件接口和控制器仍需补齐，详见 [codex.md](codex.md)。
 
 ## 目录结构
 
@@ -18,7 +18,7 @@ OpenDoge_firmware/
     opendoge_description/           # URDF/Xacro
     opendoge_control/               # ros2_control 配置
     opendoge_bringup/               # launch 和 controller 配置
-    opendoge_rl_node/               # RL 占位节点
+    opendoge_rl_node/               # RK3588 RL 推理与 joint_target 发布节点
   tools/
     el05/                           # OpenDoge EL05/RobStride 交互式硬件工具
     usb2can/                        # USB2CAN 示例和参考说明
@@ -31,10 +31,9 @@ OpenDoge_firmware/
 
 - `motor_control_interface`：应提供 `motor_control_interface/MotorHardware`。
 - `robot_joint_controller`：当前 `controllers.yaml` 引用了 `robot_joint_controller/RobotJointControllerGroup`。
-- `robot_msgs`：`opendoge_rl_node` 依赖 `RobotCommand`、`RobotState`、`MotorCommand`、`MotorState`。
 - `dm_imu` 或等价 IMU 驱动：需要发布 `/imu`。
 
-在这些包补齐前，`colcon build` 可能无法完整通过，`ros2_control_node` 也不能真正控制 EL05。
+在硬件接口和控制器补齐前，`ros2_control_node` 不能真正控制 EL05。`opendoge_rl_node` 已改为标准 ROS2 消息，不再依赖缺失的 `robot_msgs`。
 
 ## 硬件链路
 
@@ -71,7 +70,7 @@ colcon build --symlink-install --packages-select opendoge_description opendoge_c
 source install/setup.bash
 ```
 
-`opendoge_rl_node` 当前会因缺少 `robot_msgs` 构建失败。补齐 `robot_msgs` 后再执行全量构建。
+`opendoge_rl_node` 可单独构建，用于验证 `/joint_state` + `/imu` + `/joy` 到 `/joint_target` 的推理发布链路。
 
 ## 运行 bringup
 
@@ -83,6 +82,13 @@ ros2 launch opendoge_bringup bringup.launch.py
 - `robot_state_publisher`：从 xacro 生成 `robot_description`
 - `ros2_control_node`：加载 `ros2_control.yaml` 与 `controllers.yaml`
 - `spawner robot_joint_controller`
+- `opendoge_rl_node`：50 Hz 推理、200 Hz 发布 `/joint_target`
+
+单独运行推理节点：
+
+```bash
+ros2 launch opendoge_rl_node rl_node.launch.py
+```
 
 ## 快速验收
 
@@ -90,24 +96,25 @@ ros2 launch opendoge_bringup bringup.launch.py
 ros2 param get /robot_state_publisher robot_description
 ros2 control list_hardware_interfaces
 ros2 control list_controllers
-ros2 topic hz /robot_joint_controller/state
+ros2 topic hz /joint_state
+ros2 topic hz /joint_target
 ```
 
 Passive/低增益测试示例（需先读 state，数组长度=12）：
 
 ```bash
-ros2 topic echo /robot_joint_controller/state --once
-ros2 topic pub --once /robot_joint_controller/command robot_msgs/msg/RobotCommand "
-motor_command:
-  - {q: 0.0, dq: 0.0, tau: 0.0, kp: 0.0, kd: 2.0}
-  - {q: 0.0, dq: 0.0, tau: 0.0, kp: 0.0, kd: 2.0}
-  # ... 共12项，按关节顺序补齐
+ros2 topic echo /joint_state --once
+ros2 topic echo /joint_target
+ros2 topic pub --once /joy sensor_msgs/msg/Joy "
+axes: [0.0, 0.0, 0.0, 0.0]
+buttons: [0, 0, 0, 0, 0, 0, 0, 1]
 "
 ```
 
 ## 与现有代码的融合要点
 
 - 硬件接口：`ros2_control.yaml` 指向 `motor_control_interface/MotorHardware`，需要在本工作区补齐或接入该插件。
+- 推理发布：`opendoge_rl_node` 发布标准 `sensor_msgs/msg/JointState` 到 `/joint_target`，底层桥接层负责将 POS 目标转换为 LCM/DDS 或 EL05 CAN 控制帧。
 - 电机协议：EL05 走 RobStride 私有 CAN 2.0 29-bit 扩展帧，优先使用运控模式 `q/dq/tau/kp/kd`。
 - USB2CAN：`can_interface` 应解释为正式 USB2CAN 信号转发板暴露的 SocketCAN 设备名，例如 `can0`。
 - 关节顺序：URDF、`controllers.yaml`、`ros2_control.yaml`、策略 `policy/opendoge_apx/base.yaml` 必须同序。

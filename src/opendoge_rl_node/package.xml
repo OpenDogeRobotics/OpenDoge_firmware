@@ -2,7 +2,7 @@
 <package format="3">
   <name>opendoge_rl_node</name>
   <version>0.0.1</version>
-  <description>Minimal real-robot RL bridge for opendoge-apx (C++).</description>
+  <description>RK3588-oriented RL inference bridge for OpenDoge joint targets.</description>
 
   <maintainer email="todo@example.com">TODO_MAINTAINER</maintainer>
   <license>Apache-2.0</license>
@@ -11,10 +11,10 @@
 
   <depend>rclcpp</depend>
   <depend>sensor_msgs</depend>
-  <depend>robot_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>std_msgs</depend>
 
   <export>
     <build_type>ament_cmake</build_type>
   </export>
 </package>
-

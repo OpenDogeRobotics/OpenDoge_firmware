@@ -1,0 +1,70 @@
+opendoge_rl_node:
+  ros__parameters:
+    joint_state_topic: /joint_state
+    imu_topic: /imu
+    joy_topic: /joy
+    cmd_vel_topic: /cmd_vel
+    joint_target_topic: /joint_target
+    observation_topic: /rl_observation
+    action_topic: /rl_action
+
+    # RK3588 control timing: motor controller 500 Hz, target topic 200 Hz, policy 50 Hz.
+    control_rate_hz: 500.0
+    publish_rate_hz: 200.0
+    inference_rate_hz: 50.0
+    timeout_state_ms: 100
+    timeout_imu_ms: 100
+
+    # policy_backend:
+    #   none       - build/test mode, holds default_pos
+    #   linear_csv - tiny CSV backend for pipeline tests
+    #   rknn       - RKNN hook point for RK3588 deployment
+    policy_backend: none
+    policy_path: ""
+    transport_mode: ros_topic
+
+    num_single_obs: 36
+    frame_stack: 1
+    clip_obs: 18.0
+    gait_period_s: 0.6
+    action_scale: 0.25
+    standby_action_scale: 0.05
+    kp: 20.0
+    kd: 0.6
+    safe_kp: 0.0
+    safe_kd: 2.0
+
+    max_cmd_x: 0.45
+    max_cmd_y: 0.20
+    max_cmd_yaw: 1.20
+    joy_deadzone: 0.08
+    joy_axis_x: 1
+    joy_axis_y: 0
+    joy_axis_yaw: 3
+    joy_button_deadman: 4
+    joy_button_standby: 7
+    joy_button_running: 5
+    joy_button_passive: 6
+    joy_button_estop: 1
+
+    joint_names:
+      - fl_hip_joint
+      - fl_thigh_joint
+      - fl_knee_joint
+      - fr_hip_joint
+      - fr_thigh_joint
+      - fr_knee_joint
+      - hl_hip_joint
+      - hl_thigh_joint
+      - hl_knee_joint
+      - hr_hip_joint
+      - hr_thigh_joint
+      - hr_knee_joint
+
+    default_pos: [0.0, 0.65, -1.25, 0.0, 0.65, -1.25, 0.0, 0.65, -1.25, 0.0, 0.65, -1.25]
+    lower_limits: [-1.57, -2.0, -2.5, -1.57, -2.0, -2.5, -1.57, -2.0, -2.5, -1.57, -2.0, -2.5]
+    upper_limits: [1.57, 2.0, 0.0, 1.57, 2.0, 0.0, 1.57, 2.0, 0.0, 1.57, 2.0, 0.0]
+    action_lower: [-1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0]
+    action_upper: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+    motor_direction: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+    output_map: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
