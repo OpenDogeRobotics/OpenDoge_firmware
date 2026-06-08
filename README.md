@@ -40,13 +40,16 @@ OpenDoge_firmware/
 OpenDoge 使用 EL05 灵足 RobStride/RS 电机，不使用 LK/领控电机。正式电机链路是：
 
 ```text
-ROS2 / ros2_control -> MotorHardware -> SocketCAN(can0/can1/...) -> USB2CAN 信号转发板 -> EL05 CAN 总线
+ROS2 / ros2_control -> MotorHardware -> SocketCAN(can0/can1/can2/can3) -> USB 转 4 路 CAN2.0 模块 -> EL05 CAN 总线
 ```
 
 启动 CAN：
 
 ```bash
 sudo ./scripts/setup_can.sh can0 1000000
+sudo ./scripts/setup_can.sh can1 1000000
+sudo ./scripts/setup_can.sh can2 1000000
+sudo ./scripts/setup_can.sh can3 1000000
 ```
 
 EL05 交互式菜单：
@@ -82,7 +85,7 @@ ros2 launch opendoge_bringup bringup.launch.py
 - `robot_state_publisher`：从 xacro 生成 `robot_description`
 - `ros2_control_node`：加载 `ros2_control.yaml` 与 `controllers.yaml`
 - `spawner robot_joint_controller`
-- `opendoge_rl_node`：50 Hz 推理、200 Hz 发布 `/joint_target`
+- `opendoge_rl_node`：50 Hz 推理、200 Hz 发布 `/joint_target`，底层 1000 Hz 电机控制循环消费最新目标
 
 单独运行推理节点：
 
@@ -116,7 +119,7 @@ buttons: [0, 0, 0, 0, 0, 0, 0, 1]
 - 硬件接口：`ros2_control.yaml` 指向 `motor_control_interface/MotorHardware`，需要在本工作区补齐或接入该插件。
 - 推理发布：`opendoge_rl_node` 发布标准 `sensor_msgs/msg/JointState` 到 `/joint_target`，底层桥接层负责将 POS 目标转换为 LCM/DDS 或 EL05 CAN 控制帧。
 - 电机协议：EL05 走 RobStride 私有 CAN 2.0 29-bit 扩展帧，优先使用运控模式 `q/dq/tau/kp/kd`。
-- USB2CAN：`can_interface` 应解释为正式 USB2CAN 信号转发板暴露的 SocketCAN 设备名，例如 `can0`。
+- USB2CAN：使用 4 路 CAN2.0，映射为 `can0=左前(1/2/3)`、`can1=右前(4/5/6)`、`can2=左后(7/8/9)`、`can3=右后(10/11/12)`。
 - 关节顺序：URDF、`controllers.yaml`、`ros2_control.yaml`、策略 `policy/opendoge_apx/base.yaml` 必须同序。
 - IMU：确认 `/imu` 的 `frame_id` 等于 `imu_link`，若不一致，在 IMU 驱动或 RL 节点做转换。
 
@@ -130,7 +133,7 @@ buttons: [0, 0, 0, 0, 0, 0, 0, 1]
 ## 上机前检查清单
 
 - motor_id 与电机实际布线一致。
-- `can0/can1` 与 USB2CAN 通道和腿部布线一致。
+- `can0/can1/can2/can3` 与 USB2CAN 通道和腿部布线一致。
 - 关节正方向、零点 offset、软限位确认。
 - 力矩量纲一致（N·m 或驱动器单位）；初始 `torque_limits` 设置为额定的 10%-20%。
 - `/robot_joint_controller/state` 频率稳定。

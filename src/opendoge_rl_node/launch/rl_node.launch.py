@@ -21,7 +21,7 @@ def generate_launch_description():
             DeclareLaunchArgument("joint_target_topic", default_value="/joint_target"),
             DeclareLaunchArgument("publish_rate_hz", default_value="200.0"),
             DeclareLaunchArgument("inference_rate_hz", default_value="50.0"),
-            DeclareLaunchArgument("control_rate_hz", default_value="500.0"),
+            DeclareLaunchArgument("control_rate_hz", default_value="1000.0"),
             DeclareLaunchArgument("timeout_state_ms", default_value="100"),
             DeclareLaunchArgument("timeout_imu_ms", default_value="100"),
             Node(

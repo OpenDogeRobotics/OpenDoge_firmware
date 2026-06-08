@@ -1,50 +1,65 @@
 ros2_control:
   ros__parameters:
-    update_rate: 500
+    update_rate: 1000
 
     opendoge_apx_system:
       type: system
       hardware:
         plugin: motor_control_interface/MotorHardware
         param:
-          can_interface: can0
+          can_interfaces: [can0, can1, can2, can3]
           master_id: 253
+          bitrate: 1000000
+          command_timeout_ms: 20
+          state_timeout_ms: 20
+          fault_reaction: damping
 
       joints:
-        - name: fl_hip_joint
-          command_interfaces: [effort]
-          state_interfaces: [position, effort]
-        - name: fl_thigh_joint
-          command_interfaces: [effort]
-          state_interfaces: [position, effort]
-        - name: fl_knee_joint
-          command_interfaces: [effort]
-          state_interfaces: [position, effort]
-        - name: fr_hip_joint
-          command_interfaces: [effort]
-          state_interfaces: [position, effort]
-        - name: fr_thigh_joint
-          command_interfaces: [effort]
-          state_interfaces: [position, effort]
-        - name: fr_knee_joint
-          command_interfaces: [effort]
-          state_interfaces: [position, effort]
-        - name: hl_hip_joint
-          command_interfaces: [effort]
-          state_interfaces: [position, effort]
-        - name: hl_thigh_joint
-          command_interfaces: [effort]
-          state_interfaces: [position, effort]
-        - name: hl_knee_joint
-          command_interfaces: [effort]
-          state_interfaces: [position, effort]
-        - name: hr_hip_joint
-          command_interfaces: [effort]
-          state_interfaces: [position, effort]
-        - name: hr_thigh_joint
-          command_interfaces: [effort]
-          state_interfaces: [position, effort]
-        - name: hr_knee_joint
-          command_interfaces: [effort]
-          state_interfaces: [position, effort]
-
+        - name: FL_hip_joint
+          param: {can_interface: can0, motor_id: 1}
+          command_interfaces: [position, velocity, effort, kp, kd]
+          state_interfaces: [position, velocity, effort, temperature, fault]
+        - name: FL_thigh_joint
+          param: {can_interface: can0, motor_id: 2}
+          command_interfaces: [position, velocity, effort, kp, kd]
+          state_interfaces: [position, velocity, effort, temperature, fault]
+        - name: FL_calf_joint
+          param: {can_interface: can0, motor_id: 3}
+          command_interfaces: [position, velocity, effort, kp, kd]
+          state_interfaces: [position, velocity, effort, temperature, fault]
+        - name: FR_hip_joint
+          param: {can_interface: can1, motor_id: 4}
+          command_interfaces: [position, velocity, effort, kp, kd]
+          state_interfaces: [position, velocity, effort, temperature, fault]
+        - name: FR_thigh_joint
+          param: {can_interface: can1, motor_id: 5}
+          command_interfaces: [position, velocity, effort, kp, kd]
+          state_interfaces: [position, velocity, effort, temperature, fault]
+        - name: FR_calf_joint
+          param: {can_interface: can1, motor_id: 6}
+          command_interfaces: [position, velocity, effort, kp, kd]
+          state_interfaces: [position, velocity, effort, temperature, fault]
+        - name: RL_hip_joint
+          param: {can_interface: can2, motor_id: 7}
+          command_interfaces: [position, velocity, effort, kp, kd]
+          state_interfaces: [position, velocity, effort, temperature, fault]
+        - name: RL_thigh_joint
+          param: {can_interface: can2, motor_id: 8}
+          command_interfaces: [position, velocity, effort, kp, kd]
+          state_interfaces: [position, velocity, effort, temperature, fault]
+        - name: RL_calf_joint
+          param: {can_interface: can2, motor_id: 9}
+          command_interfaces: [position, velocity, effort, kp, kd]
+          state_interfaces: [position, velocity, effort, temperature, fault]
+        - name: RR_hip_joint
+          param: {can_interface: can3, motor_id: 10}
+          command_interfaces: [position, velocity, effort, kp, kd]
+          state_interfaces: [position, velocity, effort, temperature, fault]
+        - name: RR_thigh_joint
+          param: {can_interface: can3, motor_id: 11}
+          command_interfaces: [position, velocity, effort, kp, kd]
+          state_interfaces: [position, velocity, effort, temperature, fault]
+        - name: RR_calf_joint
+          param: {can_interface: can3, motor_id: 12}
+          command_interfaces: [position, velocity, effort, kp, kd]
+          state_interfaces: [position, velocity, effort, temperature, fault]

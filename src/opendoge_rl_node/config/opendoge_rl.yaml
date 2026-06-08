@@ -8,8 +8,8 @@ opendoge_rl_node:
     observation_topic: /rl_observation
     action_topic: /rl_action
 
-    # RK3588 control timing: motor controller 500 Hz, target topic 200 Hz, policy 50 Hz.
-    control_rate_hz: 500.0
+    # Deployment timing: motor controller 1000 Hz, target topic 200 Hz, policy 50 Hz.
+    control_rate_hz: 1000.0
     publish_rate_hz: 200.0
     inference_rate_hz: 50.0
     timeout_state_ms: 100
@@ -23,14 +23,20 @@ opendoge_rl_node:
     policy_path: ""
     transport_mode: ros_topic
 
-    num_single_obs: 36
-    frame_stack: 1
-    clip_obs: 18.0
-    gait_period_s: 0.6
-    action_scale: 0.25
+    # Matches OpenDoge_train: 45 one-step obs x 6 history frames = 270 ONNX input.
+    num_single_obs: 45
+    frame_stack: 6
+    clip_obs: 100.0
+    command_scale_x: 2.0
+    command_scale_y: 2.0
+    command_scale_yaw: 0.25
+    obs_scale_ang_vel: 0.25
+    obs_scale_dof_pos: 1.0
+    obs_scale_dof_vel: 0.05
+    action_scale: 0.30
     standby_action_scale: 0.05
-    kp: 20.0
-    kd: 0.6
+    kp: 12.0
+    kd: 0.5
     safe_kp: 0.0
     safe_kd: 2.0
 
@@ -48,20 +54,20 @@ opendoge_rl_node:
     joy_button_estop: 1
 
     joint_names:
-      - fl_hip_joint
-      - fl_thigh_joint
-      - fl_knee_joint
-      - fr_hip_joint
-      - fr_thigh_joint
-      - fr_knee_joint
-      - hl_hip_joint
-      - hl_thigh_joint
-      - hl_knee_joint
-      - hr_hip_joint
-      - hr_thigh_joint
-      - hr_knee_joint
+      - FL_hip_joint
+      - FL_thigh_joint
+      - FL_calf_joint
+      - FR_hip_joint
+      - FR_thigh_joint
+      - FR_calf_joint
+      - RL_hip_joint
+      - RL_thigh_joint
+      - RL_calf_joint
+      - RR_hip_joint
+      - RR_thigh_joint
+      - RR_calf_joint
 
-    default_pos: [0.0, 0.65, -1.25, 0.0, 0.65, -1.25, 0.0, 0.65, -1.25, 0.0, 0.65, -1.25]
+    default_pos: [0.0, 0.6, -1.5, 0.0, 0.6, -1.5, 0.0, 0.6, -1.5, 0.0, 0.6, -1.5]
     lower_limits: [-1.57, -2.0, -2.5, -1.57, -2.0, -2.5, -1.57, -2.0, -2.5, -1.57, -2.0, -2.5]
     upper_limits: [1.57, 2.0, 0.0, 1.57, 2.0, 0.0, 1.57, 2.0, 0.0, 1.57, 2.0, 0.0]
     action_lower: [-1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0]

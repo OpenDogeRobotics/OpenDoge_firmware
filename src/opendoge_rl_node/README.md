@@ -1,6 +1,6 @@
 # opendoge_rl_node
 
-RK3588 侧强化学习推理桥接节点。节点订阅电机 `joint_state`、`/imu`、`/joy` 和 `/cmd_vel`，构造策略 observation，以 50 Hz 运行策略，以 200 Hz 发布 POS 目标到 `/joint_target`。底层电机控制器仍按 500 Hz 执行，消费最新 `joint_target`。
+RK3588 侧强化学习推理桥接节点。节点订阅电机 `joint_state`、`/imu`、`/joy` 和 `/cmd_vel`，构造策略 observation，以 50 Hz 运行策略，以 200 Hz 发布 POS 目标到 `/joint_target`。底层电机控制器按 1000 Hz 执行，消费最新 `joint_target`。
 
 ## 通信接口
 

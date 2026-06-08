@@ -23,8 +23,6 @@ using namespace std::chrono_literals;
 
 namespace
 {
-constexpr double kPi = 3.14159265358979323846;
-
 double clamp(double value, double lower, double upper)
 {
   return std::min(std::max(value, lower), upper);
@@ -104,21 +102,26 @@ private:
 
     publish_rate_hz_ = declare_parameter<double>("publish_rate_hz", 200.0);
     inference_rate_hz_ = declare_parameter<double>("inference_rate_hz", 50.0);
-    control_rate_hz_ = declare_parameter<double>("control_rate_hz", 500.0);
+    control_rate_hz_ = declare_parameter<double>("control_rate_hz", 1000.0);
     timeout_state_ms_ = declare_parameter<int>("timeout_state_ms", 100);
     timeout_imu_ms_ = declare_parameter<int>("timeout_imu_ms", 100);
-    num_single_obs_ = declare_parameter<int>("num_single_obs", 36);
-    frame_stack_ = declare_parameter<int>("frame_stack", 1);
-    clip_obs_ = declare_parameter<double>("clip_obs", 18.0);
-    action_scale_ = declare_parameter<double>("action_scale", 0.25);
+    num_single_obs_ = declare_parameter<int>("num_single_obs", 45);
+    frame_stack_ = declare_parameter<int>("frame_stack", 6);
+    clip_obs_ = declare_parameter<double>("clip_obs", 100.0);
+    command_scale_x_ = declare_parameter<double>("command_scale_x", 2.0);
+    command_scale_y_ = declare_parameter<double>("command_scale_y", 2.0);
+    command_scale_yaw_ = declare_parameter<double>("command_scale_yaw", 0.25);
+    obs_scale_ang_vel_ = declare_parameter<double>("obs_scale_ang_vel", 0.25);
+    obs_scale_dof_pos_ = declare_parameter<double>("obs_scale_dof_pos", 1.0);
+    obs_scale_dof_vel_ = declare_parameter<double>("obs_scale_dof_vel", 0.05);
+    action_scale_ = declare_parameter<double>("action_scale", 0.30);
     standby_action_scale_ = declare_parameter<double>("standby_action_scale", 0.05);
-    gait_period_s_ = declare_parameter<double>("gait_period_s", 0.6);
     joy_deadzone_ = declare_parameter<double>("joy_deadzone", 0.08);
     max_cmd_x_ = declare_parameter<double>("max_cmd_x", 0.45);
     max_cmd_y_ = declare_parameter<double>("max_cmd_y", 0.20);
     max_cmd_yaw_ = declare_parameter<double>("max_cmd_yaw", 1.20);
-    kp_ = declare_parameter<double>("kp", 20.0);
-    kd_ = declare_parameter<double>("kd", 0.6);
+    kp_ = declare_parameter<double>("kp", 12.0);
+    kd_ = declare_parameter<double>("kd", 0.5);
     safe_kp_ = declare_parameter<double>("safe_kp", 0.0);
     safe_kd_ = declare_parameter<double>("safe_kd", 2.0);
 
@@ -133,10 +136,10 @@ private:
 
     joint_names_ = declare_parameter<std::vector<std::string>>(
       "joint_names",
-      {"fl_hip_joint", "fl_thigh_joint", "fl_knee_joint",
-        "fr_hip_joint", "fr_thigh_joint", "fr_knee_joint",
-        "hl_hip_joint", "hl_thigh_joint", "hl_knee_joint",
-        "hr_hip_joint", "hr_thigh_joint", "hr_knee_joint"});
+      {"FL_hip_joint", "FL_thigh_joint", "FL_calf_joint",
+        "FR_hip_joint", "FR_thigh_joint", "FR_calf_joint",
+        "RL_hip_joint", "RL_thigh_joint", "RL_calf_joint",
+        "RR_hip_joint", "RR_thigh_joint", "RR_calf_joint"});
 
     const auto dofs = joint_names_.size();
     default_pos_ = sizedVector(declare_parameter<std::vector<double>>("default_pos", std::vector<double>{}), dofs, 0.0);
@@ -403,11 +406,6 @@ private:
   void updateObservation()
   {
     std::fill(observation_.begin(), observation_.end(), 0.0);
-    phase_ += 1.0 / std::max(1.0, gait_period_s_ * inference_rate_hz_);
-    if (phase_ > 1.0) {
-      phase_ -= 1.0;
-    }
-
     std::vector<double> pos;
     std::vector<double> vel;
     {
@@ -423,11 +421,11 @@ private:
     }
 
     std::array<double, 3> ang_vel{};
-    std::array<double, 3> rpy{};
+    std::array<double, 3> projected_gravity{};
     {
       std::lock_guard<std::mutex> lock(imu_mutex_);
       ang_vel = base_ang_vel_;
-      rpy = quatToRollPitchYaw();
+      projected_gravity = quatToProjectedGravity();
     }
 
     auto write = [&](std::size_t index, double value) {
@@ -436,21 +434,19 @@ private:
       }
     };
 
-    write(0, mode_ == Mode::Standby ? 1.0 : std::sin(2.0 * kPi * phase_));
-    write(1, mode_ == Mode::Standby ? -1.0 : std::cos(2.0 * kPi * phase_));
-    write(2, mode_ == Mode::Running ? cmd[0] : 0.0);
-    write(3, mode_ == Mode::Running ? cmd[1] : 0.0);
-    write(4, mode_ == Mode::Running ? cmd[2] : 0.0);
+    write(0, mode_ == Mode::Running ? cmd[0] * command_scale_x_ : 0.0);
+    write(1, mode_ == Mode::Running ? cmd[1] * command_scale_y_ : 0.0);
+    write(2, mode_ == Mode::Running ? cmd[2] * command_scale_yaw_ : 0.0);
 
-    for (std::size_t i = 0; i < joint_names_.size(); ++i) {
-      write(5 + i, pos[i] - default_pos_[i]);
-      write(5 + joint_names_.size() + i, vel[i]);
+    for (std::size_t i = 0; i < 3; ++i) {
+      write(3 + i, ang_vel[i] * obs_scale_ang_vel_);
+      write(6 + i, projected_gravity[i]);
     }
 
-    const std::size_t imu_offset = 5 + joint_names_.size() * 2;
-    for (std::size_t i = 0; i < 3; ++i) {
-      write(imu_offset + i, ang_vel[i]);
-      write(imu_offset + 3 + i, rpy[i]);
+    for (std::size_t i = 0; i < joint_names_.size(); ++i) {
+      write(9 + i, (pos[i] - default_pos_[i]) * obs_scale_dof_pos_);
+      write(9 + joint_names_.size() + i, vel[i] * obs_scale_dof_vel_);
+      write(9 + joint_names_.size() * 2 + i, action_[i]);
     }
 
     obs_history_.erase(obs_history_.begin());
@@ -463,20 +459,31 @@ private:
     }
   }
 
-  std::array<double, 3> quatToRollPitchYaw() const
+  std::array<double, 3> quatToProjectedGravity() const
   {
-    const double sinr_cosp = 2.0 * (quat_w_ * quat_x_ + quat_y_ * quat_z_);
-    const double cosr_cosp = 1.0 - 2.0 * (quat_x_ * quat_x_ + quat_y_ * quat_y_);
-    const double roll = std::atan2(sinr_cosp, cosr_cosp);
+    const double gx = 0.0;
+    const double gy = 0.0;
+    const double gz = -1.0;
 
-    const double sinp = 2.0 * (quat_w_ * quat_y_ - quat_z_ * quat_x_);
-    const double pitch = std::abs(sinp) >= 1.0 ? std::copysign(kPi / 2.0, sinp) : std::asin(sinp);
+    const double x = quat_x_;
+    const double y = quat_y_;
+    const double z = quat_z_;
+    const double w = quat_w_;
 
-    const double siny_cosp = 2.0 * (quat_w_ * quat_z_ + quat_x_ * quat_y_);
-    const double cosy_cosp = 1.0 - 2.0 * (quat_y_ * quat_y_ + quat_z_ * quat_z_);
-    const double yaw = std::atan2(siny_cosp, cosy_cosp);
+    const double r00 = 1.0 - 2.0 * (y * y + z * z);
+    const double r01 = 2.0 * (x * y - z * w);
+    const double r02 = 2.0 * (x * z + y * w);
+    const double r10 = 2.0 * (x * y + z * w);
+    const double r11 = 1.0 - 2.0 * (x * x + z * z);
+    const double r12 = 2.0 * (y * z - x * w);
+    const double r20 = 2.0 * (x * z - y * w);
+    const double r21 = 2.0 * (y * z + x * w);
+    const double r22 = 1.0 - 2.0 * (x * x + y * y);
 
-    return {roll, pitch, yaw};
+    return {
+      r00 * gx + r10 * gy + r20 * gz,
+      r01 * gx + r11 * gy + r21 * gz,
+      r02 * gx + r12 * gy + r22 * gz};
   }
 
   void updateAction()
@@ -552,26 +559,30 @@ private:
 
   double publish_rate_hz_{200.0};
   double inference_rate_hz_{50.0};
-  double control_rate_hz_{500.0};
+  double control_rate_hz_{1000.0};
   int timeout_state_ms_{100};
   int timeout_imu_ms_{100};
-  int num_single_obs_{36};
-  int frame_stack_{1};
+  int num_single_obs_{45};
+  int frame_stack_{6};
   int publish_stride_{4};
   int publish_tick_{0};
-  double clip_obs_{18.0};
-  double action_scale_{0.25};
+  double clip_obs_{100.0};
+  double command_scale_x_{2.0};
+  double command_scale_y_{2.0};
+  double command_scale_yaw_{0.25};
+  double obs_scale_ang_vel_{0.25};
+  double obs_scale_dof_pos_{1.0};
+  double obs_scale_dof_vel_{0.05};
+  double action_scale_{0.30};
   double standby_action_scale_{0.05};
-  double gait_period_s_{0.6};
   double joy_deadzone_{0.08};
   double max_cmd_x_{0.45};
   double max_cmd_y_{0.20};
   double max_cmd_yaw_{1.20};
-  double kp_{20.0};
-  double kd_{0.6};
+  double kp_{12.0};
+  double kd_{0.5};
   double safe_kp_{0.0};
   double safe_kd_{2.0};
-  double phase_{0.0};
 
   int axis_x_{1};
   int axis_y_{0};
