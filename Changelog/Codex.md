@@ -51,11 +51,16 @@ opendoge_deploy
 - 50 Hz policy inference 调度。
 - 200 Hz position target hold。
 - 1000 Hz EL05 `q/dq/tau/kp/kd` 控制循环。
+- `wait_feedback -> ready -> active -> damping_fault` 显式状态机。
 - 4 路 SocketCAN：`can0..can3`。
-- 参考 `mi_motor_demo_TB.py` 的启动流程：设置运控模式、使能、连续发送运控帧。
+- 参考 `mi_motor_demo_TB.py` 的启动流程：写入 `0x7005 run_mode=0`、使能、连续发送运控帧。
 - EL05 29-bit extended CAN ID 打包。
 - EL05 通信类型 2 反馈解析。
-- 故障、高温、反馈超时、CAN 异常进入阻尼模式。
+- `faultSta` 参数轮询和解析。
+- 故障、高温、反馈超时、CAN 异常、急停进入阻尼模式。
+- 非 ROS 命令文件输入：`vx/vy/yaw_rate/active/estop`。
+- 非 ROS IMU 文件输入：`wx/wy/wz/gx/gy/gz`。
+- 配置化关节方向、零点 offset、软限位和 position target 限速。
 - 可选 ONNX Runtime 后端；未安装 ONNX Runtime 时仍可构建 dry-run 后端。
 
 当前构建验证：
@@ -170,10 +175,12 @@ kd:       0..5
 触发以下任一条件时进入阻尼模式：
 
 - 通信类型 2 反馈故障位非 0。
+- `faultSta` 参数非 0。
 - 电机高温。
 - 反馈超时。
 - CAN 打开、发送或接收异常。
-- 后续如解析到 `faultSta`，也应纳入同一故障闭锁。
+- 命令输入 `estop=true`。
+- 命令/IMU 输入解析失败。
 
 阻尼输出：
 
@@ -210,8 +217,8 @@ ROS bridge 不应参与 1000 Hz 电机控制闭环。
 
 1. 安装 ONNX Runtime C/C++，启用 `policy_backend=onnx`。
 2. 用训练侧导出的 observation/action 测试向量做数值 replay。
-3. 接入非 ROS IMU 输入，并确认坐标系、重力投影方向。
-4. 补齐关节方向、零点 offset、软限位和最终限幅。
+3. 将 IMU 文件输入替换/接入真实非 ROS IMU 驱动，并确认坐标系、重力投影方向。
+4. 将配置文件中的关节方向、零点 offset、软限位和最终限幅改成实测值。
 5. 单电机验证 EL05 帧、反馈解析和阻尼。
 6. 单腿低增益测试。
 7. 12 电机低增益站姿测试。

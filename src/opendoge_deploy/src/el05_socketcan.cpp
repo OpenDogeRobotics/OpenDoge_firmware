@@ -21,9 +21,13 @@ constexpr std::uint8_t kCommControl = 0x01;
 constexpr std::uint8_t kCommStatus = 0x02;
 constexpr std::uint8_t kCommEnable = 0x03;
 constexpr std::uint8_t kCommStop = 0x04;
+constexpr std::uint8_t kCommReadParam = 0x11;
 constexpr std::uint8_t kCommWriteParam = 0x12;
 constexpr std::uint32_t kCanEffMask = 0x1FFFFFFF;
 constexpr std::uint32_t kStatusFaultMask = 0x3F;
+constexpr std::uint16_t kIndexRunMode = 0x7005;
+constexpr std::uint16_t kIndexFaultStatus = 0x3022;
+constexpr std::uint8_t kRunModeMotion = 0x00;
 }  // namespace
 
 double El05SocketCan::clamp(double value, double lower, double upper)
@@ -111,7 +115,15 @@ bool El05SocketCan::openBus(const std::string & name)
 
 bool El05SocketCan::sendMotionMode(const JointMap & joint)
 {
-  std::array<std::uint8_t, 8> data{};
+  std::array<std::uint8_t, 8> data{
+    static_cast<std::uint8_t>(kIndexRunMode & 0xFF),
+    static_cast<std::uint8_t>((kIndexRunMode >> 8) & 0xFF),
+    0,
+    0,
+    kRunModeMotion,
+    0,
+    0,
+    0};
   return sendFrame(joint.can, kCommWriteParam, static_cast<std::uint8_t>(joint.motor_id), data, master_id_);
 }
 
@@ -126,6 +138,20 @@ bool El05SocketCan::sendStop(const JointMap & joint, bool clear_fault)
   std::array<std::uint8_t, 8> data{};
   data[0] = clear_fault ? 1 : 0;
   return sendFrame(joint.can, kCommStop, static_cast<std::uint8_t>(joint.motor_id), data, master_id_);
+}
+
+bool El05SocketCan::sendReadFaultStatus(const JointMap & joint)
+{
+  std::array<std::uint8_t, 8> data{
+    static_cast<std::uint8_t>(kIndexFaultStatus & 0xFF),
+    static_cast<std::uint8_t>((kIndexFaultStatus >> 8) & 0xFF),
+    0,
+    0,
+    0,
+    0,
+    0,
+    0};
+  return sendFrame(joint.can, kCommReadParam, static_cast<std::uint8_t>(joint.motor_id), data, master_id_);
 }
 
 bool El05SocketCan::sendMotion(const JointMap & joint, const MotorCommand & command)
@@ -199,10 +225,6 @@ void El05SocketCan::parseFrame(
   std::array<MotorState, kNumJoints> & states, double now_s)
 {
   const auto comm_type = static_cast<std::uint8_t>((can_id >> 24) & 0x1F);
-  if (comm_type != kCommStatus) {
-    return;
-  }
-
   const auto data2 = static_cast<std::uint16_t>((can_id >> 8) & 0xFFFF);
   const int motor_id = data2 & 0xFF;
   const auto it = motor_to_index_.find(motor_id);
@@ -211,6 +233,22 @@ void El05SocketCan::parseFrame(
   }
 
   auto & state = states[it->second];
+  if (comm_type == kCommReadParam) {
+    const auto index = static_cast<std::uint16_t>(data[0] | (data[1] << 8));
+    if (index == kIndexFaultStatus) {
+      state.param_fault =
+        static_cast<std::uint32_t>(data[4]) |
+        (static_cast<std::uint32_t>(data[5]) << 8) |
+        (static_cast<std::uint32_t>(data[6]) << 16) |
+        (static_cast<std::uint32_t>(data[7]) << 24);
+    }
+    return;
+  }
+
+  if (comm_type != kCommStatus) {
+    return;
+  }
+
   const auto pos_u = static_cast<std::uint16_t>((data[0] << 8) | data[1]);
   const auto vel_u = static_cast<std::uint16_t>((data[2] << 8) | data[3]);
   const auto trq_u = static_cast<std::uint16_t>((data[4] << 8) | data[5]);

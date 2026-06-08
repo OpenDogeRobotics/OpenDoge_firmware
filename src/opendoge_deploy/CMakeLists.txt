@@ -9,6 +9,7 @@ option(OPENDOGE_ENABLE_ONNX "Build ONNX Runtime policy backend when headers/libs
 add_library(opendoge_deploy_core
   src/el05_socketcan.cpp
   src/policy.cpp
+  src/runtime_io.cpp
 )
 
 target_include_directories(opendoge_deploy_core
@@ -54,3 +55,4 @@ install(TARGETS opendoge_deploy opendoge_deploy_core
 )
 
 install(DIRECTORY include/ DESTINATION include)
+install(DIRECTORY configs/ DESTINATION share/${PROJECT_NAME}/configs)

@@ -76,6 +76,12 @@ dry-run，不打开 CAN、不发送电机帧：
 ./install/opendoge_deploy/bin/opendoge_deploy --policy-backend none --duration-sec 2
 ```
 
+主动 dry-run，验证状态机可以进入 active：
+
+```bash
+./install/opendoge_deploy/bin/opendoge_deploy --policy-backend none --start-active --cmd 0.1 0.0 0.0 --duration-sec 2
+```
+
 实机运行前启动四路 CAN：
 
 ```bash
@@ -94,19 +100,39 @@ sudo ./scripts/setup_can.sh can3 1000000
 ONNX 策略运行：
 
 ```bash
-./install/opendoge_deploy/bin/opendoge_deploy --real --enable --policy-backend onnx --policy-path /path/to/opendoge.onnx
+./install/opendoge_deploy/bin/opendoge_deploy --real --enable --policy-backend onnx --policy-path /path/to/opendoge.onnx --imu-file /path/to/imu.state --command-file /path/to/command.state
 ```
 
 `--enable` 会参考 `mi_motor_demo_TB.py` 的流程发送运控模式设置和电机使能。部署程序不会自动执行机械置零。
+
+默认配置文件：
+
+```text
+src/opendoge_deploy/configs/opendoge_deploy.conf
+```
+
+上机前必须把每个关节的 `direction`、`offset`、`lower`、`upper` 和 `max_position_step` 改成实测值。
+
+非 ROS 输入文件格式参考：
+
+```text
+src/opendoge_deploy/configs/command.example
+src/opendoge_deploy/configs/imu.example
+```
+
+命令输入包含 `vx/vy/yaw_rate/active/estop`。IMU 输入包含 `wx/wy/wz/gx/gy/gz`，其中 `g*` 是投影重力方向。
 
 ## 安全策略
 
 `opendoge_deploy` 在以下情况进入阻尼模式：
 
 - 电机反馈故障位非 0。
+- `faultSta` 参数非 0。
 - 电机温度超过阈值。
 - 电机反馈超时。
 - CAN 打开、发送或接收异常。
+- 命令文件触发 `estop=true`。
+- IMU/命令输入解析失败。
 
 阻尼输出语义：
 

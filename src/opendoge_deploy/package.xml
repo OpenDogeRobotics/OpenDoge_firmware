@@ -3,7 +3,7 @@
   <name>opendoge_deploy</name>
   <version>0.0.1</version>
   <description>Standalone non-ROS RL deployment runtime for OpenDoge.</description>
-  <maintainer email="todo@example.com">TODO_MAINTAINER</maintainer>
+  <maintainer email="opendoge@example.local">OpenDoge Maintainers</maintainer>
   <license>Apache-2.0</license>
   <export>
     <build_type>cmake</build_type>

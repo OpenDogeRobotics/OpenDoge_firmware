@@ -19,6 +19,7 @@ public:
   bool sendMotionMode(const JointMap & joint);
   bool sendEnable(const JointMap & joint);
   bool sendStop(const JointMap & joint, bool clear_fault);
+  bool sendReadFaultStatus(const JointMap & joint);
   bool sendMotion(const JointMap & joint, const MotorCommand & command);
   void drain(std::array<MotorState, kNumJoints> & states, double now_s);
 
