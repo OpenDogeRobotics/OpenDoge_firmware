@@ -40,6 +40,14 @@ struct MotorCommand
   double kd{0.0};
 };
 
+struct CanStats
+{
+  std::uint64_t frames_sent{0};
+  std::uint64_t frames_received{0};
+  std::uint64_t read_errors{0};
+  std::uint64_t write_errors{0};
+};
+
 struct SafetyConfig
 {
   double state_timeout_s{0.02};

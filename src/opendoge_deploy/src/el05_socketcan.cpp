@@ -59,6 +59,7 @@ bool El05SocketCan::open(const std::array<JointMap, kNumJoints> & joints)
 {
   ok_ = true;
   last_error_.clear();
+  stats_ = {};
   motor_to_index_.clear();
   for (std::size_t i = 0; i < joints.size(); ++i) {
     motor_to_index_[joints[i].motor_id] = i;
@@ -191,9 +192,11 @@ bool El05SocketCan::sendFrame(
   std::copy(data.begin(), data.end(), frame.data);
   const auto n = ::write(it->second.fd, &frame, sizeof(frame));
   if (n != static_cast<ssize_t>(sizeof(frame))) {
+    ++stats_.write_errors;
     fail("write(" + can + "): " + std::strerror(errno));
     return false;
   }
+  ++stats_.frames_sent;
   return true;
 }
 
@@ -207,6 +210,7 @@ void El05SocketCan::drain(std::array<MotorState, kNumJoints> & states, double no
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
           break;
         }
+        ++stats_.read_errors;
         fail("read(" + bus.name + "): " + std::strerror(errno));
         break;
       }
@@ -215,6 +219,7 @@ void El05SocketCan::drain(std::array<MotorState, kNumJoints> & states, double no
       }
       std::array<std::uint8_t, 8> data{};
       std::copy(frame.data, frame.data + std::min<std::size_t>(frame.can_dlc, 8), data.begin());
+      ++stats_.frames_received;
       parseFrame(frame.can_id & kCanEffMask, data, states, now_s);
     }
   }

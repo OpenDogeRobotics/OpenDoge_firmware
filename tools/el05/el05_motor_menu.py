@@ -36,6 +36,7 @@ COMM_WRITE_PARAM = 0x12
 IDX_RUN_MODE = 0x7005
 IDX_MECH_POS = 0x7019
 IDX_MECH_VEL = 0x701B
+IDX_FAULT_STA = 0x3022
 RUN_MODE_MOTION = 0
 
 P_MIN = -12.57
@@ -50,18 +51,18 @@ KD_MIN = 0.0
 KD_MAX = 5.0
 
 DEFAULT_MOTORS = [
-    ("fl_hip_joint", 1),
-    ("fl_thigh_joint", 2),
-    ("fl_knee_joint", 3),
-    ("fr_hip_joint", 4),
-    ("fr_thigh_joint", 5),
-    ("fr_knee_joint", 6),
-    ("hl_hip_joint", 7),
-    ("hl_thigh_joint", 8),
-    ("hl_knee_joint", 9),
-    ("hr_hip_joint", 10),
-    ("hr_thigh_joint", 11),
-    ("hr_knee_joint", 12),
+    ("FL_hip_joint", 1),
+    ("FL_thigh_joint", 2),
+    ("FL_calf_joint", 3),
+    ("FR_hip_joint", 4),
+    ("FR_thigh_joint", 5),
+    ("FR_calf_joint", 6),
+    ("RL_hip_joint", 7),
+    ("RL_thigh_joint", 8),
+    ("RL_calf_joint", 9),
+    ("RR_hip_joint", 10),
+    ("RR_thigh_joint", 11),
+    ("RR_calf_joint", 12),
 ]
 
 
@@ -204,6 +205,25 @@ class El05Bus:
             return struct.unpack("<f", payload[4:8])[0]
         return None
 
+    def read_param_uint32(self, motor_id: int, index: int, timeout: float = 0.5) -> Optional[int]:
+        data = [index & 0xFF, (index >> 8) & 0xFF, 0, 0, 0, 0, 0, 0]
+        self.send(COMM_READ_PARAM, motor_id, data)
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            frame = self.recv(max(0.0, deadline - time.monotonic()))
+            if frame is None:
+                continue
+            can_id, payload = frame
+            comm_type, data2, _target = parse_ext_id(can_id)
+            resp_motor_id = data2 & 0xFF
+            if comm_type != COMM_READ_PARAM or resp_motor_id != motor_id or len(payload) < 8:
+                continue
+            resp_index = payload[0] | (payload[1] << 8)
+            if resp_index != index:
+                continue
+            return int.from_bytes(payload[4:8], "little", signed=False)
+        return None
+
     def enable(self, motor_id: int) -> Optional[MotorStatus]:
         self.send(COMM_ENABLE, motor_id, [0] * 8)
         return self.wait_status(motor_id)
@@ -306,7 +326,7 @@ def prompt_ids(motors: list[tuple[str, int]]) -> list[int]:
     print("\nMotors:")
     for idx, (name, motor_id) in enumerate(motors):
         print(f"  {idx:02d}: id={motor_id:02d} {name}")
-    print("  input examples: 1 | 1,2,3 | fl_hip_joint | a | q")
+    print("  input examples: 1 | 1,2,3 | FL_hip_joint | a | q")
     while True:
         selected = parse_ids(input("Select motor(s): "), motors)
         if selected is not None:
@@ -342,6 +362,24 @@ def cmd_read_position(bus: El05Bus, motors: list[tuple[str, int]]) -> None:
         else:
             vel_text = "n/a" if vel is None else f"{vel:+.3f} rad/s"
             print(f"  {name} id={motor_id:02d} mechPos={pos:+.4f} rad mechVel={vel_text}")
+
+
+def describe_bits(value: int) -> str:
+    if value == 0:
+        return "none"
+    return ",".join(f"bit{bit}" for bit in range(32) if value & (1 << bit))
+
+
+def cmd_read_fault_status(bus: El05Bus, motors: list[tuple[str, int]]) -> None:
+    ids = prompt_ids(motors)
+    for motor_id in ids:
+        bus.drain()
+        fault_sta = bus.read_param_uint32(motor_id, IDX_FAULT_STA)
+        name = motor_label(motors, motor_id)
+        if fault_sta is None:
+            print(f"  {name} id={motor_id:02d} no faultSta response")
+        else:
+            print(f"  {name} id={motor_id:02d} faultSta=0x{fault_sta:08X} [{describe_bits(fault_sta)}]")
 
 
 def cmd_monitor(bus: El05Bus, motors: list[tuple[str, int]]) -> None:
@@ -459,6 +497,7 @@ def print_menu(channel: str, master_id: int) -> None:
         "  7: set motion mode selected (run_mode=0)\n"
         "  8: small jog one motor\n"
         "  9: set mechanical zero selected\n"
+        "  10: read faultSta (0x3022)\n"
         "  q: quit"
     )
 
@@ -512,6 +551,8 @@ def main() -> int:
                 cmd_jog(bus, motors)
             elif choice == "9":
                 cmd_simple(bus, motors, "zero")
+            elif choice == "10":
+                cmd_read_fault_status(bus, motors)
             elif choice in {"q", "quit", "exit"}:
                 break
             else:

@@ -5,10 +5,15 @@
 #include <cmath>
 #include <csignal>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <thread>
+
+#include <sched.h>
+#include <sys/mman.h>
 
 #include "opendoge_deploy/el05_socketcan.hpp"
 #include "opendoge_deploy/policy.hpp"
@@ -71,6 +76,8 @@ struct Options
   bool clear_fault{false};
   bool start_active{false};
   bool allow_missing_imu{false};
+  bool realtime{false};
+  int cpu{-1};
   double duration_s{0.0};
   opendoge::OperatorCommand static_command;
 };
@@ -90,6 +97,8 @@ void printUsage()
     << "  --clear-fault                           send stop(clear_fault=1) before enable\n"
     << "  --start-active                          enter active after readiness checks\n"
     << "  --allow-missing-imu                     permit active with default IMU sample\n"
+    << "  --realtime                              try mlockall + SCHED_FIFO\n"
+    << "  --cpu N                                 pin process to CPU N\n"
     << "  --duration-sec SEC                      stop after SEC, 0 means until Ctrl+C\n";
 }
 
@@ -132,6 +141,10 @@ bool parseArgs(int argc, char ** argv, Options & opt)
         opt.static_command.active = true;
       } else if (arg == "--allow-missing-imu") {
         opt.allow_missing_imu = true;
+      } else if (arg == "--realtime") {
+        opt.realtime = true;
+      } else if (arg == "--cpu") {
+        opt.cpu = std::stoi(need_value(arg));
       } else if (arg == "--duration-sec") {
         opt.duration_s = std::stod(need_value(arg));
       } else {
@@ -143,6 +156,59 @@ bool parseArgs(int argc, char ** argv, Options & opt)
     }
   }
   return true;
+}
+
+std::string hexValue(std::uint64_t value, int width = 0)
+{
+  std::ostringstream ss;
+  ss << "0x" << std::uppercase << std::hex;
+  if (width > 0) {
+    ss << std::setw(width) << std::setfill('0');
+  }
+  ss << value;
+  return ss.str();
+}
+
+std::string describeBits(std::uint32_t value)
+{
+  if (value == 0) {
+    return "none";
+  }
+  std::ostringstream ss;
+  bool first = true;
+  for (int bit = 0; bit < 32; ++bit) {
+    if ((value & (1u << bit)) == 0) {
+      continue;
+    }
+    if (!first) {
+      ss << ",";
+    }
+    ss << "bit" << bit;
+    first = false;
+  }
+  return ss.str();
+}
+
+void applyRuntimeTuning(const Options & opt)
+{
+  if (opt.cpu >= 0) {
+    cpu_set_t mask;
+    CPU_ZERO(&mask);
+    CPU_SET(opt.cpu, &mask);
+    if (::sched_setaffinity(0, sizeof(mask), &mask) != 0) {
+      std::cerr << "Warning: sched_setaffinity failed\n";
+    }
+  }
+  if (opt.realtime) {
+    if (::mlockall(MCL_CURRENT | MCL_FUTURE) != 0) {
+      std::cerr << "Warning: mlockall failed\n";
+    }
+    sched_param param{};
+    param.sched_priority = 60;
+    if (::sched_setscheduler(0, SCHED_FIFO, &param) != 0) {
+      std::cerr << "Warning: sched_setscheduler(SCHED_FIFO) failed\n";
+    }
+  }
 }
 
 std::array<double, opendoge::kObsDim> buildObservation(
@@ -204,11 +270,13 @@ bool safetyFault(
       return true;
     }
     if (states[i].fault != 0) {
-      reason = joints[i].name + ": status fault bits=0x" + std::to_string(states[i].fault);
+      reason = joints[i].name + ": status fault bits=" +
+        hexValue(states[i].fault, 2) + " [" + describeBits(states[i].fault) + "]";
       return true;
     }
     if (states[i].param_fault != 0) {
-      reason = joints[i].name + ": faultSta=0x" + std::to_string(states[i].param_fault);
+      reason = joints[i].name + ": faultSta=" +
+        hexValue(states[i].param_fault, 8) + " [" + describeBits(states[i].param_fault) + "]";
       return true;
     }
     if (states[i].temperature >= safety.over_temperature_c) {
@@ -238,6 +306,34 @@ void sendDampingBurst(
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
   }
 }
+
+struct LoopStats
+{
+  std::uint64_t control_ticks{0};
+  std::uint64_t inference_ticks{0};
+  std::uint64_t target_ticks{0};
+  std::uint64_t missed_control_deadlines{0};
+  double max_control_late_s{0.0};
+
+  void resetWindow()
+  {
+    control_ticks = 0;
+    inference_ticks = 0;
+    target_ticks = 0;
+    missed_control_deadlines = 0;
+    max_control_late_s = 0.0;
+  }
+};
+
+void waitUntilNextDeadline(double next_deadline_s)
+{
+  const double remaining_s = next_deadline_s - nowSeconds();
+  if (remaining_s > 0.0003) {
+    std::this_thread::sleep_for(std::chrono::microseconds(100));
+  } else if (remaining_s > 0.00005) {
+    std::this_thread::yield();
+  }
+}
 }  // namespace
 
 int main(int argc, char ** argv)
@@ -262,6 +358,7 @@ int main(int argc, char ** argv)
   if (opt.dry_run) {
     opt.allow_missing_imu = true;
   }
+  applyRuntimeTuning(opt);
 
   std::signal(SIGINT, signalHandler);
   std::signal(SIGTERM, signalHandler);
@@ -336,7 +433,7 @@ int main(int argc, char ** argv)
   double next_infer_s = start_s;
   double next_target_s = start_s;
   double next_fault_poll_s = start_s;
-  double next_status_s = start_s;
+  double next_status_s = start_s + 1.0;
   RuntimeState runtime_state = opt.dry_run ? RuntimeState::Ready : RuntimeState::WaitFeedback;
   opendoge::SafetyConfig safety;
   safety.safe_kd = config.safe_kd;
@@ -348,6 +445,9 @@ int main(int argc, char ** argv)
   bool fault_latched = false;
   std::string fault_reason;
   double next_input_s = start_s;
+  LoopStats loop_stats;
+  std::uint64_t last_can_sent = 0;
+  std::uint64_t last_can_received = 0;
 
   while (!g_stop.load()) {
     const double t = nowSeconds();
@@ -417,6 +517,7 @@ int main(int argc, char ** argv)
     }
 
     if (t >= next_infer_s) {
+      ++loop_stats.inference_ticks;
       obs = buildObservation(states, config.joints, default_pos, last_action, command, imu, obs);
       if (!policy->infer(obs, action, error)) {
         fault_latched = true;
@@ -427,6 +528,7 @@ int main(int argc, char ** argv)
     }
 
     if (t >= next_target_s) {
+      ++loop_stats.target_ticks;
       for (std::size_t i = 0; i < opendoge::kNumJoints; ++i) {
         const auto & joint_cfg = config.joints[i];
         last_action[i] = std::clamp(action[i], -1.0, 1.0);
@@ -438,6 +540,12 @@ int main(int argc, char ** argv)
     }
 
     if (t >= next_control_s) {
+      ++loop_stats.control_ticks;
+      const double control_late_s = t - next_control_s;
+      loop_stats.max_control_late_s = std::max(loop_stats.max_control_late_s, control_late_s);
+      if (control_late_s > 0.0005) {
+        ++loop_stats.missed_control_deadlines;
+      }
       const bool active = runtime_state == RuntimeState::Active;
       for (std::size_t i = 0; i < opendoge::kNumJoints; ++i) {
         const auto & joint_cfg = config.joints[i];
@@ -461,17 +569,34 @@ int main(int argc, char ** argv)
     }
 
     if (t >= next_status_s) {
+      const auto & can_stats = can.stats();
+      const auto sent_delta = can_stats.frames_sent - last_can_sent;
+      const auto recv_delta = can_stats.frames_received - last_can_received;
       std::cout << "state=" << stateName(runtime_state)
                 << " active_cmd=" << (command.active ? 1 : 0)
-                << " imu=" << (imu.valid ? 1 : 0);
+                << " imu=" << (imu.valid ? 1 : 0)
+                << " ctrl_ticks=" << loop_stats.control_ticks
+                << " infer_ticks=" << loop_stats.inference_ticks
+                << " target_ticks=" << loop_stats.target_ticks
+                << " max_late_us=" << static_cast<int>(loop_stats.max_control_late_s * 1.0e6)
+                << " missed_ctrl=" << loop_stats.missed_control_deadlines
+                << " can_tx=" << sent_delta
+                << " can_rx=" << recv_delta
+                << " can_err=" << (can_stats.read_errors + can_stats.write_errors);
       if (fault_latched) {
         std::cout << " fault=\"" << fault_reason << "\"";
       }
       std::cout << "\n";
+      loop_stats.resetWindow();
+      last_can_sent = can_stats.frames_sent;
+      last_can_received = can_stats.frames_received;
       next_status_s = t + 1.0;
     }
 
-    std::this_thread::sleep_for(std::chrono::microseconds(100));
+    const double next_deadline_s = std::min(
+      std::min(next_control_s, next_infer_s),
+      std::min(std::min(next_target_s, next_fault_poll_s), std::min(next_status_s, next_input_s)));
+    waitUntilNextDeadline(next_deadline_s);
   }
 
   if (!opt.dry_run) {

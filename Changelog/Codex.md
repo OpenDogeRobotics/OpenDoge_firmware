@@ -58,9 +58,13 @@ opendoge_deploy
 - EL05 通信类型 2 反馈解析。
 - `faultSta` 参数轮询和解析。
 - 故障、高温、反馈超时、CAN 异常、急停进入阻尼模式。
+- 每秒输出 loop/CAN 统计：控制 tick、推理 tick、target tick、最大控制延迟、missed deadline、CAN 收发和错误计数。
+- 可选实时性设置：`--realtime` 尝试 `mlockall` + `SCHED_FIFO`，`--cpu N` 绑定 CPU。
 - 非 ROS 命令文件输入：`vx/vy/yaw_rate/active/estop`。
 - 非 ROS IMU 文件输入：`wx/wy/wz/gx/gy/gz`。
 - 配置化关节方向、零点 offset、软限位和 position target 限速。
+- 无硬件协议自检：`tools/el05/protocol_selftest.py`。
+- vcan 启动脚本：`scripts/setup_vcan.sh`。
 - 可选 ONNX Runtime 后端；未安装 ONNX Runtime 时仍可构建 dry-run 后端。
 
 当前构建验证：
@@ -181,6 +185,8 @@ kd:       0..5
 - CAN 打开、发送或接收异常。
 - 命令输入 `estop=true`。
 - 命令/IMU 输入解析失败。
+
+故障输出以十六进制显示，并列出置位 bit，避免 `0x` 后接十进制数造成误判。
 
 阻尼输出：
 

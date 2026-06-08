@@ -82,6 +82,16 @@ dry-run，不打开 CAN、不发送电机帧：
 ./install/opendoge_deploy/bin/opendoge_deploy --policy-backend none --start-active --cmd 0.1 0.0 0.0 --duration-sec 2
 ```
 
+运行时状态每秒输出一次，包含控制 tick、推理 tick、target tick、最大控制延迟、missed deadline、CAN 收发和错误计数。
+
+可选实时性参数：
+
+```bash
+./install/opendoge_deploy/bin/opendoge_deploy --policy-backend none --realtime --cpu 0 --duration-sec 2
+```
+
+`--realtime` 会尝试 `mlockall` 和 `SCHED_FIFO`；权限不足时只打印 warning，不会阻止 dry-run。
+
 实机运行前启动四路 CAN：
 
 ```bash
@@ -153,3 +163,23 @@ kd = safe_kd
 - EL05 单电机、单腿测试通过后再启用 12 电机。
 - ONNX observation/action 数值已和训练侧 replay 对齐。
 - IMU 坐标系和重力投影方向确认后再启用完整行走策略。
+
+## 无硬件测试
+
+EL05 协议打包自检：
+
+```bash
+./tools/el05/protocol_selftest.py
+```
+
+vcan 测试 SocketCAN 打开和发送路径：
+
+```bash
+sudo ./scripts/setup_vcan.sh can0
+sudo ./scripts/setup_vcan.sh can1
+sudo ./scripts/setup_vcan.sh can2
+sudo ./scripts/setup_vcan.sh can3
+./install/opendoge_deploy/bin/opendoge_deploy --real --enable --allow-missing-imu --policy-backend none --duration-sec 1
+```
+
+vcan 没有电机反馈，所以程序应保持在 `wait_feedback` 或进入安全阻尼，不应进入真实 active。

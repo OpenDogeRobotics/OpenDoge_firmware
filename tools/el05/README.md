@@ -29,6 +29,7 @@ Optional custom motor ID order:
 - `list motors`: show current joint-name to motor-id order.
 - `read mech position/velocity params`: read `0x7019 mechPos` and `0x701B mechVel` without enabling the motor.
 - `listen feedback frames`: print communication type 2 feedback frames already present on the bus.
+- `read faultSta`: read `0x3022 faultSta` as uint32 and print set bits.
 - `enable selected`: send communication type 3.
 - `stop selected`: send communication type 4.
 - `clear fault selected`: send communication type 4 with clear-fault flag.

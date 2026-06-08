@@ -25,6 +25,7 @@ public:
 
   bool ok() const { return ok_; }
   const std::string & lastError() const { return last_error_; }
+  const CanStats & stats() const { return stats_; }
 
 private:
   struct Bus
@@ -49,6 +50,7 @@ private:
 
   std::map<std::string, Bus> buses_;
   std::unordered_map<int, std::size_t> motor_to_index_;
+  CanStats stats_;
   bool ok_{true};
   std::string last_error_;
 
