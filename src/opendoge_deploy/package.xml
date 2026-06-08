@@ -1,0 +1,11 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>opendoge_deploy</name>
+  <version>0.0.1</version>
+  <description>Standalone non-ROS RL deployment runtime for OpenDoge.</description>
+  <maintainer email="todo@example.com">TODO_MAINTAINER</maintainer>
+  <license>Apache-2.0</license>
+  <export>
+    <build_type>cmake</build_type>
+  </export>
+</package>

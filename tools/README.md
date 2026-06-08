@@ -14,7 +14,7 @@ OpenDoge uses EL05 RobStride/RS motors. Do not add LK/Lingkong motor paths to th
 The production motor path is:
 
 ```text
-ROS2 / ros2_control -> motor hardware interface -> SocketCAN(can0/can1/...) -> USB2CAN signal forwarding board -> EL05 CAN bus
+opendoge_deploy -> SocketCAN(can0/can1/can2/can3) -> USB2CAN signal forwarding board -> EL05 CAN bus
 ```
 
-Use tools in `el05/` for OpenDoge bringup. Keep `usb2can/mi_motor_demo_TB.py` as a reference sample only.
+Use tools in `el05/` for OpenDoge bringup. Keep `usb2can/mi_motor_demo_TB.py` as the protocol reference sample.

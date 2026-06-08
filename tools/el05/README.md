@@ -41,4 +41,4 @@ Optional custom motor ID order:
 - Start with a single suspended motor before testing a loaded leg.
 - Do not use `small jog` on multiple motors; the tool intentionally restricts it to one motor.
 - Mechanical zero changes the motor reference. Use it only after confirming the joint is physically in the intended zero pose.
-- This tool is for bringup and validation. The production ROS path still needs a C++ `motor_control_interface/MotorHardware` implementation.
+- This tool is for bringup and validation. The production deployment path is the non-ROS C++ `opendoge_deploy` runtime.
