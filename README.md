@@ -142,7 +142,7 @@ Xbox 兼容手柄可以通过 joystick bridge 写入同一个命令文件：
 DM-IMU-L1 可以通过 IMU bridge 写入 `imu.state`：
 
 ```bash
-./tools/imu/dm_imu_bridge.py --source serial --device /dev/ttyUSB0 --baud 921600 --output /tmp/opendoge_imu.state
+./tools/imu/dm_imu_bridge.py --device /dev/ttyUSB0 --baud 921600 --configure-usb --output /tmp/opendoge_imu.state
 ```
 
 ## 安全策略

@@ -6,14 +6,13 @@ from __future__ import annotations
 import argparse
 import math
 import os
-import select
 import socket
 import struct
 import sys
 import termios
 import time
 import tty
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Iterable, Optional, Tuple
 
 
@@ -114,9 +113,10 @@ def format_imu_state(gyro: Tuple[float, float, float], gravity: Tuple[float, flo
 
 
 class SerialActiveReader:
-    def __init__(self, device: str, baud: int):
+    def __init__(self, device: str, baud: int, check_crc: bool):
         self.device = device
         self.baud = baud
+        self.check_crc = check_crc
         self.fd: Optional[int] = None
         self.buffer = bytearray()
 
@@ -139,7 +139,12 @@ class SerialActiveReader:
             chunk = b""
         if chunk:
             self.buffer.extend(chunk)
-        return parse_serial_frames(self.buffer)
+        return parse_serial_frames(self.buffer, self.check_crc)
+
+    def write(self, data: bytes) -> None:
+        if self.fd is None:
+            raise RuntimeError("serial device is not open")
+        os.write(self.fd, data)
 
 
 def configure_serial(fd: int, baud: int) -> None:
@@ -160,7 +165,19 @@ def configure_serial(fd: int, baud: int) -> None:
     termios.tcsetattr(fd, termios.TCSANOW, attrs)
 
 
-def parse_serial_frames(buffer: bytearray):
+def crc16_ccitt(data: bytes) -> int:
+    crc = 0xFFFF
+    for byte in data:
+        crc ^= byte << 8
+        for _ in range(8):
+            if crc & 0x8000:
+                crc = ((crc << 1) ^ 0x1021) & 0xFFFF
+            else:
+                crc = (crc << 1) & 0xFFFF
+    return crc
+
+
+def parse_serial_frames(buffer: bytearray, check_crc: bool = False):
     updates = []
     while True:
         start = buffer.find(b"\x55\xAA")
@@ -183,11 +200,39 @@ def parse_serial_frames(buffer: bytearray):
         if buffer[frame_len - 1] != 0x0A:
             del buffer[0]
             continue
+        if check_crc:
+            expected = crc16_ccitt(bytes(buffer[: 4 + payload_len]))
+            crc_lo = buffer[4 + payload_len]
+            crc_hi = buffer[5 + payload_len]
+            received_le = crc_lo | (crc_hi << 8)
+            received_be = (crc_lo << 8) | crc_hi
+            if expected not in (received_le, received_be):
+                del buffer[0]
+                continue
         payload = bytes(buffer[4 : 4 + payload_len])
         values = struct.unpack("<" + "f" * (payload_len // 4), payload)
         updates.append((frame_type, values))
         del buffer[:frame_len]
     return updates
+
+
+def send_usb_setup(reader: SerialActiveReader, save: bool) -> None:
+    # DM-IMU-L1 USB quick commands from the user manual.
+    commands = [
+        b"\xAA\x06\x01\x0D",  # enter setup mode
+        b"\xAA\x0A\x00\x0D",  # output interface: USB
+        b"\xAA\x01\x04\x0D",  # disable accel output
+        b"\xAA\x01\x15\x0D",  # enable gyro output
+        b"\xAA\x01\x06\x0D",  # disable euler output
+        b"\xAA\x01\x17\x0D",  # enable quaternion output
+    ]
+    if save:
+        commands.append(b"\xAA\x03\x01\x0D")  # save parameters
+    commands.append(b"\xAA\x06\x00\x0D")  # enter normal mode
+
+    for command in commands:
+        reader.write(command)
+        time.sleep(0.05)
 
 
 class CanReader:
@@ -265,8 +310,8 @@ def apply_update(state: ImuState, frame_type: int, values: Tuple[float, ...], or
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Bridge DM-IMU-L1 USB/485 or CAN output to OpenDoge imu.state.")
-    parser.add_argument("--source", choices=["serial", "can"], required=True)
+    parser = argparse.ArgumentParser(description="Bridge DM-IMU-L1 USB virtual serial or CAN output to OpenDoge imu.state.")
+    parser.add_argument("--source", choices=["serial", "can"], default="serial")
     parser.add_argument("--device", help="Serial device for --source serial, e.g. /dev/ttyUSB0")
     parser.add_argument("--baud", type=int, default=921600, help="Serial baud rate")
     parser.add_argument("--can", default="can4", help="SocketCAN interface for --source can")
@@ -275,6 +320,13 @@ def parse_args():
     parser.add_argument("--axis-map", default="xyz", help="Map robot xyz from IMU axes, e.g. xzy")
     parser.add_argument("--axis-signs", default="1,1,1", help="Signs for mapped axes, e.g. 1,-1,1")
     parser.add_argument("--timeout-sec", type=float, default=0.1, help="Warn if updates are older than this")
+    parser.add_argument(
+        "--configure-usb",
+        action="store_true",
+        help="Send USB quick commands: set USB output, enable gyro/quaternion, disable accel/euler",
+    )
+    parser.add_argument("--save-config", action="store_true", help="Save settings when used with --configure-usb")
+    parser.add_argument("--check-crc", action="store_true", help="Validate USB serial CRC16 before accepting frames")
     parser.add_argument("--quiet", action="store_true")
     return parser.parse_args()
 
@@ -306,7 +358,9 @@ def main() -> int:
             if not args.device:
                 print("--device is required for --source serial", file=sys.stderr)
                 return 1
-            with SerialActiveReader(args.device, args.baud) as reader:
+            with SerialActiveReader(args.device, args.baud, args.check_crc) as reader:
+                if args.configure_usb:
+                    send_usb_setup(reader, args.save_config)
                 return run(reader, args.output, order, signs, args.timeout_sec, args.quiet)
         with CanReader(args.can, args.can_id) as reader:
             return run(reader, args.output, order, signs, args.timeout_sec, args.quiet)
