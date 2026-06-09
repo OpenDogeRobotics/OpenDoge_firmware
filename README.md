@@ -132,6 +132,13 @@ src/opendoge_deploy/configs/imu.example
 
 命令输入包含 `vx/vy/yaw_rate/active/estop`。IMU 输入包含 `wx/wy/wz/gx/gy/gz`，其中 `g*` 是投影重力方向。
 
+Xbox 兼容手柄可以通过 joystick bridge 写入同一个命令文件：
+
+```bash
+./tools/joystick/xbox_command_bridge.py --output /tmp/opendoge_command.state --require-rb
+./install/opendoge_deploy/bin/opendoge_deploy --policy-backend onnx --policy-path /home/lain/OpenDoge/OpenDoge_firmware/gen52_model4800.onnx --command-file /tmp/opendoge_command.state --imu-file /tmp/opendoge_imu.state
+```
+
 ## 安全策略
 
 `opendoge_deploy` 在以下情况进入阻尼模式：

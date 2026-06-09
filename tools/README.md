@@ -5,6 +5,7 @@ This directory contains hardware bringup and validation tools for the real OpenD
 ## Layout
 
 - `el05/`: OpenDoge-specific EL05 / RobStride motor tools over the production USB2CAN signal forwarding board.
+- `joystick/`: Xbox-compatible joystick to `command.state` bridge for non-ROS deployment.
 - `usb2can/`: vendor/reference USB2CAN examples and notes.
 
 ## Current Rule
