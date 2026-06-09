@@ -39,7 +39,7 @@ std::uint16_t El05SocketCan::floatToUint(double value, double lower, double uppe
 {
   const double bounded = clamp(value, lower, upper);
   return static_cast<std::uint16_t>(
-    std::lround((bounded - lower) * static_cast<double>(0xFFFF) / (upper - lower)));
+    (bounded - lower) * static_cast<double>(0xFFFF) / (upper - lower));
 }
 
 double El05SocketCan::uintToFloat(std::uint16_t value, double lower, double upper)

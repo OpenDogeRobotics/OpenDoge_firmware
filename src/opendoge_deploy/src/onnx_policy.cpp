@@ -4,7 +4,9 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -33,6 +35,10 @@ public:
       auto output_name = session_->GetOutputNameAllocated(0, allocator_);
       input_name_ = input_name.get();
       output_name_ = output_name.get();
+      if (!validateIo(error)) {
+        session_.reset();
+        return false;
+      }
     } catch (const std::exception & exc) {
       error = exc.what();
       return false;
@@ -63,7 +69,12 @@ public:
         Ort::RunOptions{nullptr}, input_names, &tensor, 1, output_names, 1);
       const auto * out = outputs[0].GetTensorData<float>();
       for (std::size_t i = 0; i < kNumJoints; ++i) {
-        action[i] = std::clamp(static_cast<double>(out[i]), -1.0, 1.0);
+        const double value = static_cast<double>(out[i]);
+        if (!std::isfinite(value)) {
+          error = "ONNX output contains NaN or Inf";
+          return false;
+        }
+        action[i] = std::clamp(value, -1.0, 1.0);
       }
     } catch (const std::exception & exc) {
       error = exc.what();
@@ -79,6 +90,50 @@ private:
   std::unique_ptr<Ort::Session> session_;
   std::string input_name_;
   std::string output_name_;
+
+  static std::string shapeString(const std::vector<int64_t> & shape)
+  {
+    std::ostringstream ss;
+    ss << "[";
+    for (std::size_t i = 0; i < shape.size(); ++i) {
+      if (i != 0) {
+        ss << ",";
+      }
+      ss << shape[i];
+    }
+    ss << "]";
+    return ss.str();
+  }
+
+  bool validateIo(std::string & error)
+  {
+    const auto input_type_info = session_->GetInputTypeInfo(0);
+    const auto output_type_info = session_->GetOutputTypeInfo(0);
+    const auto input_info = input_type_info.GetTensorTypeAndShapeInfo();
+    const auto output_info = output_type_info.GetTensorTypeAndShapeInfo();
+    const auto input_type = input_info.GetElementType();
+    const auto output_type = output_info.GetElementType();
+    const auto input_shape = input_info.GetShape();
+    const auto output_shape = output_info.GetShape();
+
+    if (input_type != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT) {
+      error = "ONNX input must be float tensor";
+      return false;
+    }
+    if (output_type != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT) {
+      error = "ONNX output must be float tensor";
+      return false;
+    }
+    if (input_shape.size() != 2 || input_shape[1] != static_cast<int64_t>(kObsDim)) {
+      error = "ONNX input shape must be [batch,270], got " + shapeString(input_shape);
+      return false;
+    }
+    if (output_shape.size() != 2 || output_shape[1] != static_cast<int64_t>(kNumJoints)) {
+      error = "ONNX output shape must be [batch,12], got " + shapeString(output_shape);
+      return false;
+    }
+    return true;
+  }
 };
 }  // namespace
 

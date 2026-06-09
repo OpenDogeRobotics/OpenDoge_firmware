@@ -29,7 +29,7 @@ def build_ext_id(comm_type: int, data2: int, target_id: int) -> int:
 
 def float_to_uint(value: float, low: float, high: float) -> int:
     value = max(low, min(high, value))
-    return round((value - low) * 0xFFFF / (high - low))
+    return int((value - low) * 0xFFFF / (high - low))
 
 
 def pack_motion(q: float, dq: float, tau: float, kp: float, kd: float) -> tuple[int, bytes]:
@@ -69,7 +69,7 @@ def main() -> int:
 
     tau_u, motion_payload = pack_motion(q=0.0, dq=0.0, tau=0.0, kp=12.0, kd=0.5)
     motion_id = build_ext_id(COMM_CONTROL, tau_u, motor_id) | CAN_EFF_FLAG
-    assert_equal("motion_id", motion_id, 0x81800001)
+    assert_equal("motion_id", motion_id, 0x817FFF01)
     assert_equal("motion_payload_len", len(motion_payload), 8)
 
     socketcan_packet = struct.pack("=IB3x8s", motion_id, 8, motion_payload)

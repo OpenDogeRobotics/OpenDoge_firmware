@@ -139,6 +139,12 @@ Xbox 兼容手柄可以通过 joystick bridge 写入同一个命令文件：
 ./install/opendoge_deploy/bin/opendoge_deploy --policy-backend onnx --policy-path /home/lain/OpenDoge/OpenDoge_firmware/gen52_model4800.onnx --command-file /tmp/opendoge_command.state --imu-file /tmp/opendoge_imu.state
 ```
 
+DM-IMU-L1 可以通过 IMU bridge 写入 `imu.state`：
+
+```bash
+./tools/imu/dm_imu_bridge.py --source serial --device /dev/ttyUSB0 --baud 921600 --output /tmp/opendoge_imu.state
+```
+
 ## 安全策略
 
 `opendoge_deploy` 在以下情况进入阻尼模式：
