@@ -28,7 +28,7 @@ OpenDoge_firmware/
 
 ```text
 opendoge_deploy
-  -> CPU ONNX policy 50 Hz
+  -> CPU ONNX policy 100 Hz
   -> position target hold 200 Hz
   -> EL05 q/dq/tau/kp/kd control 1000 Hz
   -> SocketCAN can0/can1/can2/can3

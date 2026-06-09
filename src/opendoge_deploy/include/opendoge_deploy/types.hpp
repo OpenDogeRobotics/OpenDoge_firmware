@@ -70,7 +70,7 @@ struct JointCalibration
 
 struct DeployConfig
 {
-  double inference_hz{50.0};
+  double inference_hz{100.0};
   double target_hz{200.0};
   double control_hz{1000.0};
   double kp{12.0};

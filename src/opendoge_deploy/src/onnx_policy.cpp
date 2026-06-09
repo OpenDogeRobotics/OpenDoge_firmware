@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <array>
 #include <memory>
+#include <string>
 #include <vector>
 
 #include <onnxruntime_cxx_api.h>
@@ -28,8 +29,10 @@ public:
   {
     try {
       session_ = std::make_unique<Ort::Session>(env_, path.c_str(), session_options_);
-      input_name_ = session_->GetInputNameAllocated(0, allocator_);
-      output_name_ = session_->GetOutputNameAllocated(0, allocator_);
+      auto input_name = session_->GetInputNameAllocated(0, allocator_);
+      auto output_name = session_->GetOutputNameAllocated(0, allocator_);
+      input_name_ = input_name.get();
+      output_name_ = output_name.get();
     } catch (const std::exception & exc) {
       error = exc.what();
       return false;
@@ -53,8 +56,8 @@ public:
     auto tensor = Ort::Value::CreateTensor<float>(
       memory, input.data(), input.size(), input_shape.data(), input_shape.size());
 
-    const char * input_names[] = {input_name_.get()};
-    const char * output_names[] = {output_name_.get()};
+    const char * input_names[] = {input_name_.c_str()};
+    const char * output_names[] = {output_name_.c_str()};
     try {
       auto outputs = session_->Run(
         Ort::RunOptions{nullptr}, input_names, &tensor, 1, output_names, 1);
@@ -74,8 +77,8 @@ private:
   Ort::SessionOptions session_options_;
   Ort::AllocatorWithDefaultOptions allocator_;
   std::unique_ptr<Ort::Session> session_;
-  Ort::AllocatedStringPtr input_name_{nullptr};
-  Ort::AllocatedStringPtr output_name_{nullptr};
+  std::string input_name_;
+  std::string output_name_;
 };
 }  // namespace
 

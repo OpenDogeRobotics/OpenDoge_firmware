@@ -35,6 +35,7 @@ if(OPENDOGE_ENABLE_ONNX)
       /usr/lib/x86_64-linux-gnu
   )
   if(ONNXRUNTIME_INCLUDE_DIR AND ONNXRUNTIME_LIBRARY)
+    get_filename_component(ONNXRUNTIME_LIBRARY_DIR "${ONNXRUNTIME_LIBRARY}" DIRECTORY)
     target_sources(opendoge_deploy_core PRIVATE src/onnx_policy.cpp)
     target_include_directories(opendoge_deploy_core PRIVATE ${ONNXRUNTIME_INCLUDE_DIR})
     target_link_libraries(opendoge_deploy_core PUBLIC ${ONNXRUNTIME_LIBRARY})
@@ -47,6 +48,13 @@ endif()
 add_executable(opendoge_deploy src/main.cpp)
 target_link_libraries(opendoge_deploy PRIVATE opendoge_deploy_core pthread)
 target_compile_options(opendoge_deploy PRIVATE -Wall -Wextra -Wpedantic)
+
+if(ONNXRUNTIME_LIBRARY_DIR)
+  set_target_properties(opendoge_deploy PROPERTIES
+    BUILD_RPATH "${ONNXRUNTIME_LIBRARY_DIR}"
+    INSTALL_RPATH "${ONNXRUNTIME_LIBRARY_DIR}"
+  )
+endif()
 
 install(TARGETS opendoge_deploy opendoge_deploy_core
   RUNTIME DESTINATION bin
