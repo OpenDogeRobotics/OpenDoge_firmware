@@ -61,7 +61,7 @@ RR_hip_joint, RR_thigh_joint, RR_calf_joint
 ## 构建
 
 ```bash
-cd /home/lain/OpenDoge/OpenDoge_firmware
+cd /home/lxy/OpenDoge/OpenDoge_firmware
 colcon build --symlink-install --packages-select opendoge_deploy
 source install/setup.bash
 ```
@@ -69,6 +69,41 @@ source install/setup.bash
 如果要启用 ONNX 后端，需要安装 ONNX Runtime C/C++ 运行库，并让 CMake 能找到 `onnxruntime_cxx_api.h` 和 `libonnxruntime.so`。未找到 ONNX Runtime 时，`opendoge_deploy` 仍会构建，但只支持 `none` / `linear_csv` 后端。
 
 ## 运行
+
+### 快速启动整机
+
+非 ROS 部署下，`scripts/start_robot.sh` 承担类似 ROS launch 的聚合启动职责：初始化四路 SocketCAN，启动 IMU bridge、手柄 command bridge，并运行 `opendoge_deploy` 主程序。
+
+先做 dry-run，确认二进制和配置文件可用：
+
+```bash
+./scripts/start_robot.sh dry
+```
+
+上机后的第一步建议只进入实机阻尼/安全保持模式，不加载策略：
+
+```bash
+./scripts/start_robot.sh damping
+```
+
+运行 ONNX 策略时显式传入模型路径：
+
+```bash
+POLICY_PATH=/home/lxy/OpenDoge/OpenDoge_firmware/policy/gen52_model4800.onnx \
+  ./scripts/start_robot.sh policy
+```
+
+常用环境变量：
+
+```bash
+IMU_DEVICE=/dev/ttyUSB0
+JOYSTICK_DEVICE=/dev/input/js0
+COMMAND_FILE=/tmp/opendoge_command.state
+IMU_FILE=/tmp/opendoge_imu.state
+REALTIME_ARGS="--realtime --cpu 0"
+```
+
+脚本默认写入 `active=false` 和 `estop=false` 的初始 command 文件；使用手柄时 `--require-rb` 会要求按住 RB 才输出 active，避免上电后直接进入主动运动。
 
 dry-run，不打开 CAN、不发送电机帧：
 
