@@ -12,15 +12,21 @@
 OpenDoge_firmware/
   README.md
   Changelog/Codex.md
-  docs/                            # EL05 手册、原理图等参考文档
-  requirements.txt                  # Python 参考工具依赖
+  docs/                            # EL05 手册、IMU 文档等参考
+  requirements.txt                 # Python 参考工具依赖
   scripts/
-    setup_can.sh                    # USB2CAN SocketCAN 启动脚本
+    setup_can.sh                   # USB2CAN SocketCAN 启动脚本
+    setup_vcan.sh                  # 虚拟 CAN 无硬件测试
+    setup_onnx.sh                  # ONNX Runtime 下载安装
+    start_robot.sh                 # 整机启动聚合脚本
   src/
-    opendoge_deploy/                # 非 ROS 实机部署主程序
+    opendoge_deploy/               # 非 ROS 实机部署主程序
   tools/
     el05/                           # EL05/RobStride 交互式硬件工具
+    imu/                            # DM-IMU-L1 bridge 守护进程
+    joystick/                       # Xbox 手柄 bridge 守护进程
     usb2can/                        # USB2CAN 示例和参考说明
+  policy/                           # ONNX 强化学习策略模型
   build/ install/ log/              # colcon 生成，git 忽略
 ```
 
@@ -58,15 +64,69 @@ RL_hip_joint, RL_thigh_joint, RL_calf_joint,
 RR_hip_joint, RR_thigh_joint, RR_calf_joint
 ```
 
-## 构建
+## 环境准备
+
+### ONNX Runtime（运行策略推理必须）
 
 ```bash
-cd /home/lxy/OpenDoge/OpenDoge_firmware
+# 自动下载并安装到 build/deps/onnxruntime/（不进 git）
+./scripts/setup_onnx.sh
+
+# 之后每次构建前设置环境变量：
+export ONNXRUNTIME_ROOT=$(realpath build/deps/onnxruntime)
+```
+
+ONNX Runtime 安装在仓库本地 `build/deps/` 下，不会被 git 追踪。`setup_onnx.sh` 支持以下选项：
+
+```bash
+ONNX_VERSION=1.20.1 ./scripts/setup_onnx.sh   # 指定版本
+DEPS_DIR=~/onnx ./scripts/setup_onnx.sh       # 指定安装目录
+```
+
+### 串口权限（IMU 读取）
+
+DM-IMU-L1 通过 USB 虚拟串口连接，设备节点属于 `dialout` 组：
+
+```bash
+sudo usermod -a -G dialout $USER
+# 重新登录后生效
+```
+
+## 构建
+
+> **执行根目录**：以下所有命令均在仓库根目录 `OpenDoge_firmware/` 下执行。
+
+```bash
+# 启用 ONNX 后端（必需）：
+export ONNXRUNTIME_ROOT=$(realpath build/deps/onnxruntime)
 colcon build --symlink-install --packages-select opendoge_deploy
 source install/setup.bash
 ```
 
-如果要启用 ONNX 后端，需要安装 ONNX Runtime C/C++ 运行库，并让 CMake 能找到 `onnxruntime_cxx_api.h` 和 `libonnxruntime.so`。未找到 ONNX Runtime 时，`opendoge_deploy` 仍会构建，但只支持 `none` / `linear_csv` 后端。
+如果未找到 ONNX Runtime，`opendoge_deploy` 仍会构建，但只支持 `none` / `linear_csv` 后端（无法加载 ONNX 模型）。
+
+## 验证 IMU
+
+```bash
+# 测试 IMU 数据读取（输出到终端和文件）
+python3 tools/imu/dm_imu_bridge.py \
+  --source serial --device /dev/ttyACM0 --baud 921600 \
+  --output /tmp/opendoge_imu_test.state
+# 新开终端查看输出：
+cat /tmp/opendoge_imu_test.state
+# wx=0.006391  wy=0.005326  wz=0.005326
+# gx=-0.016831 gy=0.023595  gz=-0.999580
+```
+
+`gz ≈ -1.0` 且陀螺仪接近零说明 IMU 水平放置且数据正常。
+
+如果 IMU 在另一设备（如 `/dev/ttyUSB0`），使用：
+
+```bash
+python3 tools/imu/dm_imu_bridge.py \
+  --source serial --device /dev/ttyUSB0 --baud 921600 \
+  --output /tmp/opendoge_imu.state &
+```
 
 ## 运行
 
@@ -89,14 +149,14 @@ source install/setup.bash
 运行 ONNX 策略时显式传入模型路径：
 
 ```bash
-POLICY_PATH=/home/lxy/OpenDoge/OpenDoge_firmware/policy/gen52_model4800.onnx \
+POLICY_PATH=policy/gen52_model4800.onnx \
   ./scripts/start_robot.sh policy
 ```
 
 常用环境变量：
 
 ```bash
-IMU_DEVICE=/dev/ttyUSB0
+IMU_DEVICE=/dev/ttyACM0
 JOYSTICK_DEVICE=/dev/input/js0
 COMMAND_FILE=/tmp/opendoge_command.state
 IMU_FILE=/tmp/opendoge_imu.state
@@ -105,27 +165,59 @@ REALTIME_ARGS="--realtime --cpu 0"
 
 脚本默认写入 `active=false` 和 `estop=false` 的初始 command 文件；使用手柄时 `--require-rb` 会要求按住 RB 才输出 active，避免上电后直接进入主动运动。
 
-dry-run，不打开 CAN、不发送电机帧：
+### 无硬件 dry-run 测试
 
 ```bash
+# 不使用任何硬件，仅验证二进制和模型加载
 ./install/opendoge_deploy/bin/opendoge_deploy --policy-backend none --duration-sec 2
 ```
 
 主动 dry-run，验证状态机可以进入 active：
 
 ```bash
-./install/opendoge_deploy/bin/opendoge_deploy --policy-backend none --start-active --cmd 0.1 0.0 0.0 --duration-sec 2
+./install/opendoge_deploy/bin/opendoge_deploy \
+  --policy-backend none --start-active --cmd 0.1 0.0 0.0 --duration-sec 2
+```
+
+### ONNX 策略 dry-run（IMU 输入）
+
+启动 IMU bridge 后，用真实 IMU 数据验证 ONNX 推理全链路：
+
+```bash
+# 终端 1: 启动 IMU bridge
+python3 tools/imu/dm_imu_bridge.py \
+  --source serial --device /dev/ttyACM0 --baud 921600 \
+  --output /tmp/opendoge_imu_test.state &
+
+# 终端 2: 运行 ONNX 推理 dry-run
+./install/opendoge_deploy/bin/opendoge_deploy \
+  --policy-backend onnx \
+  --policy-path policy/gen52_model4800.onnx \
+  --imu-file /tmp/opendoge_imu_test.state \
+  --start-active --cmd 0.1 0.0 0.0 \
+  --duration-sec 2
+```
+
+期望输出：
+
+```text
+OpenDoge deploy running: dry-run, policy=onnx, control=1000Hz
+state=active active_cmd=1 imu=1 ctrl_ticks=1000 infer_ticks=100 target_ticks=200 ...
 ```
 
 运行时状态每秒输出一次，包含控制 tick、推理 tick、target tick、最大控制延迟、missed deadline、CAN 收发和错误计数。
 
-可选实时性参数：
+### 可选实时性参数
 
 ```bash
-./install/opendoge_deploy/bin/opendoge_deploy --policy-backend none --realtime --cpu 0 --duration-sec 2
+./install/opendoge_deploy/bin/opendoge_deploy \
+  --policy-backend onnx --policy-path policy/gen52_model4800.onnx \
+  --realtime --cpu 0 --duration-sec 2
 ```
 
-`--realtime` 会尝试 `mlockall` 和 `SCHED_FIFO`；权限不足时只打印 warning，不会阻止 dry-run。
+`--realtime` 会尝试 `mlockall` 和 `SCHED_FIFO`；权限不足时只打印 warning，不会阻止运行。
+
+### 实机 CAN 测试
 
 实机运行前启动四路 CAN：
 
@@ -142,10 +234,15 @@ sudo ./scripts/setup_can.sh can3 1000000
 ./install/opendoge_deploy/bin/opendoge_deploy --real --enable --policy-backend none
 ```
 
-ONNX 策略运行：
+ONNX 策略实机运行：
 
 ```bash
-./install/opendoge_deploy/bin/opendoge_deploy --real --enable --policy-backend onnx --policy-path /path/to/opendoge.onnx --imu-file /path/to/imu.state --command-file /path/to/command.state
+./install/opendoge_deploy/bin/opendoge_deploy \
+  --real --enable \
+  --policy-backend onnx \
+  --policy-path policy/gen52_model4800.onnx \
+  --imu-file /tmp/opendoge_imu.state \
+  --command-file /tmp/opendoge_command.state
 ```
 
 `--enable` 会参考 `mi_motor_demo_TB.py` 的流程发送运控模式设置和电机使能。部署程序不会自动执行机械置零。
@@ -157,6 +254,8 @@ src/opendoge_deploy/configs/opendoge_deploy.conf
 ```
 
 上机前必须把每个关节的 `direction`、`offset`、`lower`、`upper` 和 `max_position_step` 改成实测值。
+
+### 非 ROS 输入
 
 非 ROS 输入文件格式参考：
 
@@ -170,15 +269,53 @@ src/opendoge_deploy/configs/imu.example
 Xbox 兼容手柄可以通过 joystick bridge 写入同一个命令文件：
 
 ```bash
-./tools/joystick/xbox_command_bridge.py --output /tmp/opendoge_command.state --require-rb
-./install/opendoge_deploy/bin/opendoge_deploy --policy-backend onnx --policy-path /home/lain/OpenDoge/OpenDoge_firmware/gen52_model4800.onnx --command-file /tmp/opendoge_command.state --imu-file /tmp/opendoge_imu.state
+./tools/joystick/xbox_command_bridge.py \
+  --output /tmp/opendoge_command.state --require-rb
+
+./install/opendoge_deploy/bin/opendoge_deploy \
+  --policy-backend onnx \
+  --policy-path policy/gen52_model4800.onnx \
+  --command-file /tmp/opendoge_command.state \
+  --imu-file /tmp/opendoge_imu.state
 ```
 
-DM-IMU-L1 可以通过 IMU bridge 写入 `imu.state`：
+IMU bridge：
 
 ```bash
-./tools/imu/dm_imu_bridge.py --device /dev/ttyUSB0 --baud 921600 --configure-usb --output /tmp/opendoge_imu.state
+./tools/imu/dm_imu_bridge.py \
+  --device /dev/ttyACM0 --baud 921600 \
+  --output /tmp/opendoge_imu.state
 ```
+
+如果 IMU 安装方向与训练坐标系不一致，通过轴映射修正：
+
+```bash
+./tools/imu/dm_imu_bridge.py \
+  --device /dev/ttyACM0 --baud 921600 \
+  --axis-map xzy --axis-signs "1,-1,1" \
+  --output /tmp/opendoge_imu.state
+```
+
+## vcan 无硬件 CAN 测试
+
+EL05 协议打包自检：
+
+```bash
+./tools/el05/protocol_selftest.py
+```
+
+vcan 测试 SocketCAN 打开和发送路径：
+
+```bash
+sudo ./scripts/setup_vcan.sh can0
+sudo ./scripts/setup_vcan.sh can1
+sudo ./scripts/setup_vcan.sh can2
+sudo ./scripts/setup_vcan.sh can3
+./install/opendoge_deploy/bin/opendoge_deploy \
+  --real --enable --allow-missing-imu --policy-backend none --duration-sec 1
+```
+
+vcan 没有电机反馈，所以程序应保持在 `wait_feedback` 或进入安全阻尼，不应进入真实 active。
 
 ## 安全策略
 
@@ -206,28 +343,8 @@ kd = safe_kd
 
 - 电机 ID、CAN 通道、腿部布线一致。
 - 关节正方向和机械零点 offset 已标定。
-- 真实 URDF 使用 `/home/lain/OpenDoge/OpenDoge_description/URDF`，不要使用 firmware 内的旧占位描述。
+- 真实 URDF 使用 `../OpenDoge_description/URDF`，不要使用 firmware 内的旧占位描述。
 - 软件限位、position rate limit、velocity limit、torque limit 已设置为保守值。
 - EL05 单电机、单腿测试通过后再启用 12 电机。
 - ONNX observation/action 数值已和训练侧 replay 对齐。
 - IMU 坐标系和重力投影方向确认后再启用完整行走策略。
-
-## 无硬件测试
-
-EL05 协议打包自检：
-
-```bash
-./tools/el05/protocol_selftest.py
-```
-
-vcan 测试 SocketCAN 打开和发送路径：
-
-```bash
-sudo ./scripts/setup_vcan.sh can0
-sudo ./scripts/setup_vcan.sh can1
-sudo ./scripts/setup_vcan.sh can2
-sudo ./scripts/setup_vcan.sh can3
-./install/opendoge_deploy/bin/opendoge_deploy --real --enable --allow-missing-imu --policy-backend none --duration-sec 1
-```
-
-vcan 没有电机反馈，所以程序应保持在 `wait_feedback` 或进入安全阻尼，不应进入真实 active。
