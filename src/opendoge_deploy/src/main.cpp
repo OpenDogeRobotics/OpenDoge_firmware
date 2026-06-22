@@ -223,9 +223,10 @@ inline double advancePhase(
   return std::fmod(phase + dt * freq, 1.0);
 }
 
-/// Build 52-dim single-frame observation matching UniLab _compute_obs:
+/// Build 49-dim single-frame actor observation matching UniLab Round 26.
+/// No privileged information — all 49 dims are deployable on real hardware.
 ///   gyro(3) + neg_gravity(3) + dof_pos_diff(12) + dof_vel(12)
-///   + last_action(12) + commands(3) + feet_phase(4) + linvel(3)
+///   + last_action(12) + commands(3) + feet_phase(4)
 std::array<double, opendoge::kObsDim> buildObservation(
   const std::array<opendoge::MotorState, opendoge::kNumJoints> & states,
   const std::array<opendoge::JointCalibration, opendoge::kNumJoints> & calibration,
@@ -277,16 +278,11 @@ std::array<double, opendoge::kObsDim> buildObservation(
 
   // 7. feet_phase — 4 dims
   //    FL=phase, FR=(phase+0.5)%1, RL=(phase+0.5)%1, RR=phase
-  obs[offset + 0] = phase;                      // FL
+  obs[offset + 0] = phase;                       // FL
   obs[offset + 1] = std::fmod(phase + 0.5, 1.0); // FR
   obs[offset + 2] = std::fmod(phase + 0.5, 1.0); // RL
-  obs[offset + 3] = phase;                      // RR
-  offset += 4;
-
-  // 8. local linvel — 3 dims (placeholder, TODO: estimate from IMU+kinematics)
-  for (std::size_t i = 0; i < 3; ++i) {
-    obs[offset + i] = 0.0;
-  }
+  obs[offset + 3] = phase;                       // RR
+  // offset += 4;  // final: 49 dims total
 
   return obs;
 }

@@ -8,10 +8,11 @@ namespace opendoge
 {
 
 constexpr std::size_t kNumJoints = 12;
-// Single-frame observation matching UniLab training _compute_obs:
+// Single-frame actor observation (deployable, no privileged info):
 //   gyro(3) + neg_gravity(3) + dof_pos_diff(12) + dof_vel(12)
-//   + last_action(12) + commands(3) + feet_phase(4) + linvel(3) = 52
-constexpr std::size_t kObsDim = 52;
+//   + last_action(12) + commands(3) + feet_phase(4) = 49
+// Critic has privileged linvel(3) → 52, but actor does not depend on it.
+constexpr std::size_t kObsDim = 49;
 
 struct JointMap
 {
@@ -74,10 +75,10 @@ struct DeployConfig
   double inference_hz{100.0};
   double target_hz{200.0};
   double control_hz{1000.0};
-  double kp{12.0};
-  double kd{0.5};
+  double kp{20.0};
+  double kd{0.3};
   double safe_kd{2.0};
-  double action_scale{0.30};
+  double action_scale{0.50};
   double state_timeout_s{0.02};
   double over_temperature_c{80.0};
   double fault_poll_hz{10.0};
@@ -111,9 +112,14 @@ inline std::array<JointMap, kNumJoints> defaultJointMap()
   }};
 }
 
+// Matches UniLab scene_flat.xml keyframe qpos (joint portion):
+//   FL: 0, 0.5, -1.3  FR: 0, 0.5, -1.3
+//   RL: 0, 0.7, -1.3  RR: 0, 0.7, -1.3
+// Front/rear asymmetry is intentional — it centres the CoM between legs
+// and is what the policy was trained against.
 inline std::array<double, kNumJoints> defaultJointPosition()
 {
-  return {0.0, 0.6, -1.5, 0.0, 0.6, -1.5, 0.0, 0.6, -1.5, 0.0, 0.6, -1.5};
+  return {0.0, 0.5, -1.3, 0.0, 0.5, -1.3, 0.0, 0.7, -1.3, 0.0, 0.7, -1.3};
 }
 
 inline std::array<JointCalibration, kNumJoints> defaultJointCalibration()

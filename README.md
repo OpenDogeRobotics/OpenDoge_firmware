@@ -66,39 +66,38 @@ RR_hip_joint, RR_thigh_joint, RR_calf_joint
 
 ## 策略模型
 
-当前部署使用 **UniLab Round 25** 模型（`policy/opendoge_r25.onnx`）。
+当前部署使用 **UniLab Round 26** 模型（`policy/opendoge_r26.onnx`）。
 
 | 属性 | 值 |
 |------|-----|
 | 训练 | UniLab PPO, MuJoCo, OpenDogeJoystickFlat |
-| Best/Final reward | 143.40 / 109.98 |
-| 输入 | 52 维单帧 observation（无 frame stacking） |
+| Best/Final reward | 143.08 / 113.03 |
+| 输入 | 49 维单帧 observation（全部可部署，无 privileged info） |
 | 输出 | 12 维 joint action |
-| 网络结构 | MLP 52→512→256→128→12 (ELU) |
+| 网络结构 | MLP 49→512→256→128→12 (ELU) |
 | 归一化 | 嵌入 ONNX (Sub+Div, 训练期 running mean/std) |
 | PD 增益 | Kp=20.0, Kd=0.3 |
 | Action scale | 0.50 |
-| 默认站姿 | [0, 0.6, -1.5] × 4 (hip=0, thigh=0.6, calf=-1.5) |
+| 默认站姿 | FL/FR: [0, 0.5, -1.3], RL/RR: [0, 0.7, -1.3] (对齐训练 keyframe) |
 
-### Observation 格式（52 维）
+### Observation 格式（49 维）
 
 ```
 gyro(3) + neg_gravity(3) + dof_pos_delta(12) + dof_vel(12)
-+ last_action(12) + commands(3) + feet_phase(4) + linvel(3)
++ last_action(12) + commands(3) + feet_phase(4)
 ```
 
 | 分量 | 索引 | 说明 |
 |------|------|------|
-| gyro | 0:3 | IMU 角速度 (rad/s)，无需缩放 |
-| neg_gravity | 3:6 | IMU 投影重力方向 (已取反) |
+| gyro | 0:3 | IMU 角速度 (rad/s) |
+| neg_gravity | 3:6 | IMU 投影重力方向 (已取反 = -upvector) |
 | dof_pos_delta | 6:18 | 关节位置 − default_angles |
 | dof_vel | 18:30 | 关节速度 (rad/s) |
 | last_action | 30:42 | 上一帧策略输出 |
-| commands | 42:45 | vx, vy, vyaw (原始值，无需缩放) |
+| commands | 42:45 | vx, vy, vyaw (原始值) |
 | feet_phase | 45:49 | 自适应步态相位 (FL, FR, RL, RR) |
-| linvel | 49:52 | 局部线速度 (当前为占位零) |
 
-> **注意**：linvel 当前使用零占位。策略在训练时带有 `noise_config.scale_linvel=0.1` 噪声，对不精确估计有一定鲁棒性。后续可结合 IMU 积分 + 腿部运动学提升估计精度。
+> **关键设计**：linvel（局部线速度）从 actor 观测中移除。训练采用非对称 actor-critic — critic 保留 privileged linvel 做值估计，actor 只依赖实机可获取的 49 维观测。这消除了 sim2real 的根本性 gap。
 
 ### 命令输入
 
@@ -195,7 +194,7 @@ python3 tools/imu/dm_imu_bridge.py \
 运行 ONNX 策略时显式传入模型路径：
 
 ```bash
-POLICY_PATH=policy/opendoge_r25.onnx \
+POLICY_PATH=policy/opendoge_r26.onnx \
   ./scripts/start_robot.sh policy
 ```
 
@@ -238,7 +237,7 @@ python3 tools/imu/dm_imu_bridge.py \
 # 终端 2: 运行 ONNX 推理 dry-run
 ./install/opendoge_deploy/bin/opendoge_deploy \
   --policy-backend onnx \
-  --policy-path policy/opendoge_r25.onnx \
+  --policy-path policy/opendoge_r26.onnx \
   --imu-file /tmp/opendoge_imu_test.state \
   --start-active --cmd 0.1 0.0 0.0 \
   --duration-sec 2
@@ -286,7 +285,7 @@ ONNX 策略实机运行：
 ./install/opendoge_deploy/bin/opendoge_deploy \
   --real --enable \
   --policy-backend onnx \
-  --policy-path policy/opendoge_r25.onnx \
+  --policy-path policy/opendoge_r26.onnx \
   --imu-file /tmp/opendoge_imu.state \
   --command-file /tmp/opendoge_command.state
 ```
@@ -320,7 +319,7 @@ Xbox 兼容手柄可以通过 joystick bridge 写入同一个命令文件：
 
 ./install/opendoge_deploy/bin/opendoge_deploy \
   --policy-backend onnx \
-  --policy-path policy/opendoge_r25.onnx \
+  --policy-path policy/opendoge_r26.onnx \
   --command-file /tmp/opendoge_command.state \
   --imu-file /tmp/opendoge_imu.state
 ```

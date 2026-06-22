@@ -1,3 +1,23 @@
+# 2026-06-22 default_angles 修复 — 对齐训练 keyframe
+
+修复 `defaultJointPosition()` 与 UniLab 训练 keyframe 的不匹配。
+
+- **问题**：固件 default_angles 为对称 `[0, 0.6, -1.5] × 4`，但训练 keyframe 为不对称 `FL/FR: [0, 0.5, -1.3], RL/RR: [0, 0.7, -1.3]`。`dof_pos_diff` 和 `target = default + action * 0.50` 都会偏移，导致 sim2real gap。
+- **修复**：`defaultJointPosition()` 改为训练 keyframe 值（前腿 thigh=0.5/calf=-1.3，后腿 thigh=0.7/calf=-1.3）。
+- **同步**：`DeployConfig` C++ 默认值更新为 kp=20/kd=0.3/action_scale=0.50（之前是旧值 12/0.5/0.30，被配置文件覆盖但易误导）。
+- **同步**：配置头注释、README、Codex.md 旧站姿引用全部更新。
+
+# 2026-06-22 UniLab Round 26 — 消除 linvel sim2real gap
+
+部署框架同步到 Round 26 (49-dim actor obs, 无 linvel)。
+
+- Actor 观测 52→49 维（移除 linvel — 实机不可获取的 privileged 信息）
+- 训练采用非对称 actor-critic：critic 保留 linvel (52 维) 做值估计
+- Round 26 结果：best=143.08, final=113.03 (+3.05 vs R25 final)
+- swing_feet_z=1.50（新纪录），所有追踪指标均优于 R25
+- 策略模型：`policy/opendoge_r26.onnx`
+- 部署框架同步：kObsDim 52→49，buildObservation 移除 linvel
+
 # 2026-06-22 UniLab Round 25 部署对齐
 
 部署框架重构为匹配当前 UniLab 训练管线 (Round 25)：
@@ -115,7 +135,7 @@ RR_hip_joint, RR_thigh_joint, RR_calf_joint
 
 训练仓库：`/home/lain/UniLab` (UniLab PPO pipeline)。
 
-部署侧 observation 匹配 UniLab `_compute_obs` 输出（52 维单帧，无 frame stacking）：
+部署侧 observation 匹配 UniLab `_compute_obs` actor 输出（49 维单帧，无 privileged info）：
 
 ```text
 gyro(3)
@@ -125,10 +145,11 @@ dof_vel(12)
 last_action(12)
 commands(3) — vx, vy, vyaw（原始值，无需缩放）
 feet_phase(4) — 自适应步态相位 (FL/FR/RL/RR)
-linvel(3) — 局部线速度（当前为零占位）
 ```
 
-单帧 52 维，ONNX 输入维度为 `52`。ONNX 模型内部包含 obs_normalizer (Sub+Div)。
+单帧 49 维，ONNX 输入维度为 `49`。ONNX 模型内部包含 obs_normalizer (Sub+Div)。
+
+> **设计决策**：linvel 从 actor 观测中移除。训练采用非对称 actor-critic（actor 49 维 / critic 52 维含 privileged linvel），消除 sim2real gap。实机部署不需要也无法精确获取 linvel。
 
 自适应相位计算：
 
@@ -139,10 +160,11 @@ phase += ctrl_dt * freq  (mod 1.0)
 feet_phase = [phase, (phase+0.5)%1, (phase+0.5)%1, phase]
 ```
 
-默认站姿：
+默认站姿（2026-06-22 更新：对齐训练 keyframe，前后不对称）：
 
 ```text
-[0.0, 0.6, -1.5] * 4
+FL: [0.0, 0.5, -1.3], FR: [0.0, 0.5, -1.3]
+RL: [0.0, 0.7, -1.3], RR: [0.0, 0.7, -1.3]
 ```
 
 策略输出：
