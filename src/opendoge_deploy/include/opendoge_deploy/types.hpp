@@ -8,9 +8,10 @@ namespace opendoge
 {
 
 constexpr std::size_t kNumJoints = 12;
-constexpr std::size_t kOneStepObs = 45;
-constexpr std::size_t kFrameStack = 6;
-constexpr std::size_t kObsDim = kOneStepObs * kFrameStack;
+// Single-frame observation matching UniLab training _compute_obs:
+//   gyro(3) + neg_gravity(3) + dof_pos_diff(12) + dof_vel(12)
+//   + last_action(12) + commands(3) + feet_phase(4) + linvel(3) = 52
+constexpr std::size_t kObsDim = 52;
 
 struct JointMap
 {
@@ -117,11 +118,13 @@ inline std::array<double, kNumJoints> defaultJointPosition()
 
 inline std::array<JointCalibration, kNumJoints> defaultJointCalibration()
 {
+  // Physically reasonable defaults matching OpenDoge URDF constraints.
+  // Config file overrides these — these are safety fallbacks only.
   return {{
-    {1.0, 0.0, -1.57, 1.57}, {1.0, 0.0, -2.0, 2.0}, {1.0, 0.0, -2.5, 0.0},
-    {1.0, 0.0, -1.57, 1.57}, {1.0, 0.0, -2.0, 2.0}, {1.0, 0.0, -2.5, 0.0},
-    {1.0, 0.0, -1.57, 1.57}, {1.0, 0.0, -2.0, 2.0}, {1.0, 0.0, -2.5, 0.0},
-    {1.0, 0.0, -1.57, 1.57}, {1.0, 0.0, -2.0, 2.0}, {1.0, 0.0, -2.5, 0.0},
+    {1.0, 0.0, -0.785, 0.26}, {1.0, 0.0, -0.785, 1.134}, {1.0, 0.0, -2.68, -1.04},
+    {1.0, 0.0, -0.26, 0.785},  {1.0, 0.0, -0.785, 1.134}, {1.0, 0.0, -2.68, -1.04},
+    {1.0, 0.0, -0.785, 0.26}, {1.0, 0.0, -0.785, 1.134}, {1.0, 0.0, -2.68, -1.04},
+    {1.0, 0.0, -0.26, 0.785},  {1.0, 0.0, -0.785, 1.134}, {1.0, 0.0, -2.68, -1.04},
   }};
 }
 

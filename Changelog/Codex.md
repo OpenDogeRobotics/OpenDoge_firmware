@@ -1,3 +1,18 @@
+# 2026-06-22 UniLab Round 25 部署对齐
+
+部署框架重构为匹配当前 UniLab 训练管线 (Round 25)：
+
+- Observation 从 270 维 (45×6 frame_stack) 迁移到 **52 维单帧**
+- Observation 排序匹配 `_compute_obs`: gyro + neg_gravity + diff + dof_vel + action + commands + phase + linvel
+- 新增自适应步态相位计算 (cmd_speed → freq ∈ [1.2, 2.5] Hz)
+- 新增 linvel 占位 (后续可替换为估计器)
+- 移除命令缩放 (vx×2, vy×2, vyaw×0.25 → 原始值)
+- PD 增益更新: kp 12→20, kd 0.5→0.3
+- action_scale 更新: 0.30→0.50
+- ONNX 验证输入维度更新: 270→52
+- 策略模型: `policy/opendoge_r25.onnx` (UniLab Round 25, best 143.40 / final 109.98)
+- 配置文件关节软限位更新为 URDF 物理约束
+
 # 2026-06-08 OpenDoge 强化学习部署记录
 
 本文固化 `/home/lain/OpenDoge/OpenDoge_firmware` 当前状态：OpenDoge 的实机强化学习部署主路径已经改为非 ROS 单进程运行时。
@@ -98,20 +113,31 @@ RR_hip_joint, RR_thigh_joint, RR_calf_joint
 
 ## RL Observation
 
-训练仓库：`/home/lain/OpenDoge/OpenDoge_train`。
+训练仓库：`/home/lain/UniLab` (UniLab PPO pipeline)。
 
-部署侧 observation 按训练侧 OpenDoge 配置组织：
+部署侧 observation 匹配 UniLab `_compute_obs` 输出（52 维单帧，无 frame stacking）：
 
 ```text
-commands(3)
-base_ang_vel(3)
-projected_gravity(3)
-dof_pos_delta(12)
+gyro(3)
+neg_gravity(3) — IMU projected_gravity（已是"下"方向 = -upvector）
+dof_pos_delta(12) — 关节位置 − default_angles
 dof_vel(12)
 last_action(12)
+commands(3) — vx, vy, vyaw（原始值，无需缩放）
+feet_phase(4) — 自适应步态相位 (FL/FR/RL/RR)
+linvel(3) — 局部线速度（当前为零占位）
 ```
 
-单帧 45 维，`frame_stack=6`，ONNX 输入维度为 `270`。
+单帧 52 维，ONNX 输入维度为 `52`。ONNX 模型内部包含 obs_normalizer (Sub+Div)。
+
+自适应相位计算：
+
+```
+cmd_speed = norm([vx, vy, vyaw])
+freq = clamp(1.2 + 1.3 * cmd_speed / 0.6, 1.2, 2.5)
+phase += ctrl_dt * freq  (mod 1.0)
+feet_phase = [phase, (phase+0.5)%1, (phase+0.5)%1, phase]
+```
 
 默认站姿：
 
@@ -122,9 +148,9 @@ last_action(12)
 策略输出：
 
 ```text
-target_position = default_joint_position + action * 0.30
-kp = 12.0
-kd = 0.5
+target_position = default_joint_position + action * 0.50
+kp = 20.0
+kd = 0.3
 ```
 
 ## 滤波判断

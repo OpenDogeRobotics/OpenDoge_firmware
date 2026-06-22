@@ -211,6 +211,21 @@ void applyRuntimeTuning(const Options & opt)
   }
 }
 
+/// Compute adaptive gait phase matching UniLab training.
+/// cmd_speed = norm([vx, vy, vyaw]); freq ∈ [1.2, 2.5] Hz; phase wraps at 1.0.
+/// dt is the time step between phase advances (1.0 / inference_hz).
+inline double advancePhase(
+  const opendoge::OperatorCommand & command, double phase, double dt)
+{
+  const double cmd_speed = std::sqrt(
+    command.vx * command.vx + command.vy * command.vy + command.yaw_rate * command.yaw_rate);
+  const double freq = std::clamp(1.2 + 1.3 * cmd_speed / 0.6, 1.2, 2.5);
+  return std::fmod(phase + dt * freq, 1.0);
+}
+
+/// Build 52-dim single-frame observation matching UniLab _compute_obs:
+///   gyro(3) + neg_gravity(3) + dof_pos_diff(12) + dof_vel(12)
+///   + last_action(12) + commands(3) + feet_phase(4) + linvel(3)
 std::array<double, opendoge::kObsDim> buildObservation(
   const std::array<opendoge::MotorState, opendoge::kNumJoints> & states,
   const std::array<opendoge::JointCalibration, opendoge::kNumJoints> & calibration,
@@ -218,31 +233,61 @@ std::array<double, opendoge::kObsDim> buildObservation(
   const std::array<double, opendoge::kNumJoints> & last_action,
   const opendoge::OperatorCommand & command,
   const opendoge::ImuSample & imu,
-  const std::array<double, opendoge::kObsDim> & previous)
+  double phase)
 {
   std::array<double, opendoge::kObsDim> obs{};
+  std::size_t offset = 0;
 
-  std::array<double, opendoge::kOneStepObs> one{};
-  one[0] = command.vx * 2.0;
-  one[1] = command.vy * 2.0;
-  one[2] = command.yaw_rate * 0.25;
+  // 1. gyro (angular velocity) — 3 dims, no scaling
   for (std::size_t i = 0; i < 3; ++i) {
-    one[3 + i] = imu.angular_velocity[i] * 0.25;
-    one[6 + i] = imu.projected_gravity[i];
+    obs[offset + i] = imu.angular_velocity[i];
   }
+  offset += 3;
+
+  // 2. negated gravity (projected_gravity from IMU is already "down" = -upvector) — 3 dims
+  for (std::size_t i = 0; i < 3; ++i) {
+    obs[offset + i] = imu.projected_gravity[i];
+  }
+  offset += 3;
+
+  // 3. dof_pos - default_pos — 12 dims
   for (std::size_t i = 0; i < opendoge::kNumJoints; ++i) {
     const auto pos = opendoge::logicalPosition(states[i].position, calibration[i]);
-    const auto vel = opendoge::logicalVelocity(states[i].velocity, calibration[i]);
-    one[9 + i] = pos - default_pos[i];
-    one[9 + opendoge::kNumJoints + i] = vel * 0.05;
-    one[9 + opendoge::kNumJoints * 2 + i] = last_action[i];
+    obs[offset + i] = pos - default_pos[i];
+  }
+  offset += opendoge::kNumJoints;
+
+  // 4. dof_vel — 12 dims
+  for (std::size_t i = 0; i < opendoge::kNumJoints; ++i) {
+    obs[offset + i] = opendoge::logicalVelocity(states[i].velocity, calibration[i]);
+  }
+  offset += opendoge::kNumJoints;
+
+  // 5. last_action — 12 dims
+  for (std::size_t i = 0; i < opendoge::kNumJoints; ++i) {
+    obs[offset + i] = last_action[i];
+  }
+  offset += opendoge::kNumJoints;
+
+  // 6. commands (raw, no scaling) — 3 dims
+  obs[offset + 0] = command.vx;
+  obs[offset + 1] = command.vy;
+  obs[offset + 2] = command.yaw_rate;
+  offset += 3;
+
+  // 7. feet_phase — 4 dims
+  //    FL=phase, FR=(phase+0.5)%1, RL=(phase+0.5)%1, RR=phase
+  obs[offset + 0] = phase;                      // FL
+  obs[offset + 1] = std::fmod(phase + 0.5, 1.0); // FR
+  obs[offset + 2] = std::fmod(phase + 0.5, 1.0); // RL
+  obs[offset + 3] = phase;                      // RR
+  offset += 4;
+
+  // 8. local linvel — 3 dims (placeholder, TODO: estimate from IMU+kinematics)
+  for (std::size_t i = 0; i < 3; ++i) {
+    obs[offset + i] = 0.0;
   }
 
-  std::copy(one.begin(), one.end(), obs.begin());
-  std::copy(
-    previous.begin(),
-    previous.begin() + static_cast<std::ptrdiff_t>(opendoge::kObsDim - opendoge::kOneStepObs),
-    obs.begin() + static_cast<std::ptrdiff_t>(opendoge::kOneStepObs));
   return obs;
 }
 
@@ -379,6 +424,7 @@ int main(int argc, char ** argv)
   std::array<double, opendoge::kObsDim> obs{};
   std::array<double, opendoge::kNumJoints> logical_target = default_pos;
   std::array<double, opendoge::kNumJoints> limited_target = default_pos;
+  double phase = 0.0;
 
   for (std::size_t i = 0; i < opendoge::kNumJoints; ++i) {
     states[i].position = opendoge::motorPosition(default_pos[i], config.joints[i]);
@@ -518,7 +564,8 @@ int main(int argc, char ** argv)
 
     if (t >= next_infer_s) {
       ++loop_stats.inference_ticks;
-      obs = buildObservation(states, config.joints, default_pos, last_action, command, imu, obs);
+      phase = advancePhase(command, phase, 1.0 / config.inference_hz);
+      obs = buildObservation(states, config.joints, default_pos, last_action, command, imu, phase);
       if (!policy->infer(obs, action, error)) {
         fault_latched = true;
         fault_reason = "policy infer failed: " + error;

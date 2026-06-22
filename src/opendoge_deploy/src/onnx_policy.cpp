@@ -125,7 +125,7 @@ private:
       return false;
     }
     if (input_shape.size() != 2 || input_shape[1] != static_cast<int64_t>(kObsDim)) {
-      error = "ONNX input shape must be [batch,270], got " + shapeString(input_shape);
+      error = "ONNX input shape must be [batch," + std::to_string(kObsDim) + "], got " + shapeString(input_shape);
       return false;
     }
     if (output_shape.size() != 2 || output_shape[1] != static_cast<int64_t>(kNumJoints)) {
