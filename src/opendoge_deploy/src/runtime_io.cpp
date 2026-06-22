@@ -132,6 +132,14 @@ bool loadDeployConfig(
     config.fault_poll_hz = getDouble(values, "fault_poll_hz", config.fault_poll_hz);
     config.pc_startup_ramp_s = getDouble(values, "pc_startup_ramp_s", config.pc_startup_ramp_s);
     config.pc_startup_max_deviation = getDouble(values, "pc_startup_max_deviation", config.pc_startup_max_deviation);
+    config.torque_threshold = getDouble(values, "torque_threshold", config.torque_threshold);
+    config.torque_timeout_s = getDouble(values, "torque_timeout_s", config.torque_timeout_s);
+    config.tracking_error_threshold = getDouble(values, "tracking_error_threshold", config.tracking_error_threshold);
+    config.tracking_error_timeout_s = getDouble(values, "tracking_error_timeout_s", config.tracking_error_timeout_s);
+    config.command_timeout_s = getDouble(values, "command_timeout_s", config.command_timeout_s);
+    config.fall_gravity_z_threshold = getDouble(values, "fall_gravity_z_threshold", config.fall_gravity_z_threshold);
+    config.fall_timeout_s = getDouble(values, "fall_timeout_s", config.fall_timeout_s);
+    config.command_smoothing_alpha = getDouble(values, "command_smoothing_alpha", config.command_smoothing_alpha);
 
     for (std::size_t i = 0; i < joints.size(); ++i) {
       const auto prefix = "joint." + joints[i].name + ".";
@@ -192,6 +200,12 @@ bool readCommandFile(const std::string & path, OperatorCommand & command, std::s
     if (nums.size() > 6) {
       command.rl_inference = nums[6] != 0.0;
     }
+    if (nums.size() > 7) {
+      command.clear_fault = nums[7] != 0.0;
+    }
+    if (nums.size() > 8) {
+      command.low_gain_mode = nums[8] != 0.0;
+    }
     error.clear();
     return true;
   }
@@ -204,6 +218,8 @@ bool readCommandFile(const std::string & path, OperatorCommand & command, std::s
     command.estop = getBool(values, "estop", command.estop);
     command.position_control = getBool(values, "position_control", command.position_control);
     command.rl_inference = getBool(values, "rl_inference", command.rl_inference);
+    command.clear_fault = getBool(values, "clear_fault", command.clear_fault);
+    command.low_gain_mode = getBool(values, "low_gain_mode", command.low_gain_mode);
   } catch (const std::exception & exc) {
     error = "bad command file " + path + ": " + exc.what();
     return false;

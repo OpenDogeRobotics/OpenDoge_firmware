@@ -55,6 +55,17 @@ struct SafetyConfig
   double state_timeout_s{0.02};
   double over_temperature_c{80.0};
   double safe_kd{2.0};
+  // Sustained torque exceedance monitoring
+  double torque_threshold{3.0};
+  double torque_timeout_s{0.5};
+  // Joint tracking error monitoring
+  double tracking_error_threshold{0.5};
+  double tracking_error_timeout_s{0.3};
+  // Stale command file detection
+  double command_timeout_s{0.5};
+  // IMU-based fall detection
+  double fall_gravity_z_threshold{0.3};
+  double fall_timeout_s{0.3};
 };
 
 struct JointCalibration
@@ -84,6 +95,16 @@ struct DeployConfig
   double fault_poll_hz{10.0};
   double pc_startup_ramp_s{2.0};
   double pc_startup_max_deviation{0.25};
+  // Safety monitoring thresholds
+  double torque_threshold{3.0};
+  double torque_timeout_s{0.5};
+  double tracking_error_threshold{0.5};
+  double tracking_error_timeout_s{0.3};
+  double command_timeout_s{0.5};
+  double fall_gravity_z_threshold{0.3};
+  double fall_timeout_s{0.3};
+  // Command smoothing (0 = disabled)
+  double command_smoothing_alpha{0.0};
   std::array<JointCalibration, kNumJoints> joints{};
 };
 
@@ -96,6 +117,8 @@ struct OperatorCommand
   bool estop{false};
   bool position_control{false};
   bool rl_inference{false};
+  bool clear_fault{false};
+  bool low_gain_mode{false};
 };
 
 struct ImuSample

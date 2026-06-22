@@ -8,6 +8,7 @@ CAN_IFACES="${CAN_IFACES:-can0 can1 can2 can3}"
 CAN_BITRATE="${CAN_BITRATE:-1000000}"
 COMMAND_FILE="${COMMAND_FILE:-/tmp/opendoge_command.state}"
 IMU_FILE="${IMU_FILE:-/tmp/opendoge_imu.state}"
+STATUS_FILE="${STATUS_FILE:-/tmp/opendoge_status.json}"
 CONFIG_FILE="${CONFIG_FILE:-${ROOT_DIR}/src/opendoge_deploy/configs/opendoge_deploy.conf}"
 DEPLOY_BIN="${DEPLOY_BIN:-${ROOT_DIR}/install/opendoge_deploy/bin/opendoge_deploy}"
 POLICY_BACKEND="${POLICY_BACKEND:-onnx}"
@@ -20,7 +21,7 @@ PIDS=()
 
 usage() {
   cat <<EOF
-Usage: $0 [dry|damping|policy]
+Usage: $0 [dry|damping|policy|calibrate|low-gain]
 
 Environment:
   CAN_IFACES       CAN interfaces, default: "can0 can1 can2 can3"
@@ -33,6 +34,8 @@ Environment:
   IMU_DEVICE       DM-IMU serial device, default: /dev/ttyUSB0
   JOYSTICK_DEVICE  optional /dev/input/js* device
   REALTIME_ARGS    optional deploy realtime args, for example: "--realtime --cpu 0"
+  CALIB_OUTPUT     calibration output path, default: /tmp/opendoge_calibration.conf
+  CALIB_CHANNEL    CAN channel for calibration, default: can0
 EOF
 }
 
@@ -63,6 +66,8 @@ vy=0.0
 yaw_rate=0.0
 active=false
 estop=false
+clear_fault=false
+low_gain_mode=false
 EOF
   cat >"${IMU_FILE}" <<EOF
 wx=0.0
@@ -123,6 +128,7 @@ run_deploy() {
     --config "${CONFIG_FILE}" \
     --command-file "${COMMAND_FILE}" \
     --imu-file "${IMU_FILE}" \
+    --status-file "${STATUS_FILE}" \
     ${REALTIME_ARGS} \
     "${args[@]}"
 }
@@ -155,6 +161,38 @@ case "${MODE}" in
     run_deploy --real --enable --clear-fault \
       --policy-backend "${POLICY_BACKEND}" \
       --policy-path "${POLICY_PATH}"
+    ;;
+  calibrate)
+    CALIB_OUTPUT="${CALIB_OUTPUT:-/tmp/opendoge_calibration.conf}"
+    CALIB_CHANNEL="${CALIB_CHANNEL:-can0}"
+    start_can
+    echo "Running motor calibration on ${CALIB_CHANNEL}..."
+    "${ROOT_DIR}/tools/el05/el05_calibrate.py" \
+      --channel "${CALIB_CHANNEL}" \
+      --config "${CONFIG_FILE}" \
+      | tee "${CALIB_OUTPUT}"
+    echo ""
+    echo "Calibration written to ${CALIB_OUTPUT}"
+    echo "Append its contents to ${CONFIG_FILE} before running damping or policy mode."
+    ;;
+  low-gain)
+    write_safe_command
+    # Pre-write low_gain_mode so the state machine enters LowGainTest directly
+    # after motors are ready (no policy, reduced gains, static standing pose).
+    cat >"${COMMAND_FILE}" <<EOF
+vx=0.0
+vy=0.0
+yaw_rate=0.0
+active=false
+estop=false
+clear_fault=false
+low_gain_mode=true
+EOF
+    start_can
+    start_imu_bridge
+    start_joystick_bridge
+    run_deploy --real --enable --clear-fault --policy-backend none
+    echo "Low-gain mode exited. Use BACK button on joystick to toggle low_gain_mode."
     ;;
   *)
     echo "Unknown mode: ${MODE}" >&2

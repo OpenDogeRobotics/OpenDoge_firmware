@@ -120,6 +120,8 @@ class RobotCommand:
     estop: bool = False
     position_control: bool = False
     rl_inference: bool = False
+    clear_fault: bool = False
+    low_gain_mode: bool = False
 
 
 class XboxCommandMapper:
@@ -174,6 +176,8 @@ class XboxCommandMapper:
         self.estop = False
         self.position_control = False
         self.rl_inference = False
+        self.clear_fault = False
+        self.low_gain_mode = False
 
     def update(self, events: Iterable[JoystickEvent]) -> None:
         for event in events:
@@ -194,12 +198,22 @@ class XboxCommandMapper:
         if self.require_rb and not self.buttons.get(self.btn_rb, False):
             active = False
 
-        if not active:
+        # Low-gain mode suppresses policy activation and velocity commands
+        if self.low_gain_mode:
+            active = False
+            vx_axis = 0.0
+            vy_axis = 0.0
+            yaw_axis = 0.0
+        elif not active:
             vx_axis = 0.0
             vy_axis = 0.0
             yaw_axis = 0.0
 
-        # 未激活或急停时，模式标志强制为 false，保证输出一致性
+        # clear_fault is a one-shot pulse: true for one cycle, then auto-reset
+        clear_fault = self.clear_fault
+        self.clear_fault = False
+
+        # When not active or estop, mode flags are forced to false for consistency
         return RobotCommand(
             vx=vx_axis * self.max_vx,
             vy=vy_axis * self.max_vy,
@@ -208,26 +222,30 @@ class XboxCommandMapper:
             estop=self.estop,
             position_control=self.position_control if active else False,
             rl_inference=self.rl_inference if active else False,
+            clear_fault=clear_fault,
+            low_gain_mode=self.low_gain_mode,
         )
 
     def _handle_button_down(self, button: int) -> None:
-        # A: 启动机器人并进入位置控制模式
+        # A: Start robot and enter position control mode
         if button == self.btn_a:
             self.estop = False
+            self.low_gain_mode = False
             self.active_requested = True
             self.position_control = True
             self.rl_inference = False
-        # B: 机器人失能（电机发送保护指令）
+        # B: Disable robot (motors enter protection mode)
         elif button == self.btn_b:
             self.active_requested = False
             self.position_control = False
             self.rl_inference = False
-        # X: 仅在位置控制模式下可进入 RL 推理状态
+            self.low_gain_mode = False
+        # X: Toggle RL inference (only available in position control mode)
         elif button == self.btn_x:
             if self.position_control and self.active_requested and not self.estop:
                 self.rl_inference = True
                 self.position_control = False
-        # Y: 仅在 RL 推理状态下可退出，回到位置控制模式
+        # Y: Exit RL inference back to position control mode
         elif button == self.btn_y:
             if self.rl_inference and self.active_requested and not self.estop:
                 self.rl_inference = False
@@ -236,10 +254,10 @@ class XboxCommandMapper:
             if not self.estop:
                 self.active_requested = not self.active_requested
         elif button == self.btn_back:
-            self.estop = True
-            self.active_requested = False
-            self.position_control = False
-            self.rl_inference = False
+            if not self.estop:
+                self.low_gain_mode = not self.low_gain_mode
+                if self.low_gain_mode:
+                    self.active_requested = False
 
 
 def format_command_file(command: RobotCommand) -> str:
@@ -251,6 +269,8 @@ def format_command_file(command: RobotCommand) -> str:
         f"estop={'true' if command.estop else 'false'}\n"
         f"position_control={'true' if command.position_control else 'false'}\n"
         f"rl_inference={'true' if command.rl_inference else 'false'}\n"
+        f"clear_fault={'true' if command.clear_fault else 'false'}\n"
+        f"low_gain_mode={'true' if command.low_gain_mode else 'false'}\n"
     )
 
 

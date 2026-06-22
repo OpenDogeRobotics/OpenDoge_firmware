@@ -14,6 +14,7 @@
 
 #include <sched.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
 
 #include "opendoge_deploy/el05_socketcan.hpp"
 #include "opendoge_deploy/policy.hpp"
@@ -48,6 +49,7 @@ enum class RuntimeState
   EnteringPosition,
   ActivePC,
   ActiveRL,
+  LowGainTest,
   DampingFault,
 };
 
@@ -64,6 +66,8 @@ const char * stateName(RuntimeState state)
       return "active_pc";
     case RuntimeState::ActiveRL:
       return "active_rl";
+    case RuntimeState::LowGainTest:
+      return "low_gain_test";
     case RuntimeState::DampingFault:
       return "damping_fault";
   }
@@ -85,6 +89,7 @@ struct Options
   bool realtime{false};
   int cpu{-1};
   double duration_s{0.0};
+  std::string status_file;
   opendoge::OperatorCommand static_command;
 };
 
@@ -97,6 +102,7 @@ void printUsage()
     << "  --config PATH                           deploy key=value config\n"
     << "  --command-file PATH                     command.state input (vx/vy/yaw_rate/active/estop/position_control/rl_inference)\n"
     << "  --imu-file PATH                         wx/wy/wz/gx/gy/gz input\n"
+    << "  --status-file PATH                      write JSON status snapshot each second\n"
     << "  --cmd VX VY YAW                         static command\n"
     << "  --real                                  open can0..can3 and send frames\n"
     << "  --enable                                set motion mode and enable motors on startup\n"
@@ -151,6 +157,8 @@ bool parseArgs(int argc, char ** argv, Options & opt)
         opt.realtime = true;
       } else if (arg == "--cpu") {
         opt.cpu = std::stoi(need_value(arg));
+      } else if (arg == "--status-file") {
+        opt.status_file = need_value(arg);
       } else if (arg == "--duration-sec") {
         opt.duration_s = std::stod(need_value(arg));
       } else {
@@ -300,14 +308,29 @@ bool allFeedbackReceived(const std::array<opendoge::MotorState, opendoge::kNumJo
   });
 }
 
+// Per-joint safety state for sustained-condition monitoring.
+// Timers reset when condition clears; a fault is raised only when
+// the condition persists beyond the configured timeout.
+struct JointSafetyState
+{
+  double torque_exceeded_since_s{0.0};
+  double tracking_error_since_s{0.0};
+};
+
 bool safetyFault(
   const std::array<opendoge::MotorState, opendoge::kNumJoints> & states,
   const std::array<opendoge::JointMap, opendoge::kNumJoints> & joints,
+  const std::array<opendoge::JointCalibration, opendoge::kNumJoints> & calibration,
   const opendoge::SafetyConfig & safety,
+  RuntimeState runtime_state,
+  const std::array<double, opendoge::kNumJoints> & logical_target,
+  const opendoge::ImuSample & imu,
+  std::array<JointSafetyState, opendoge::kNumJoints> & safety_state,
   double now_s,
   std::string & reason)
 {
   for (std::size_t i = 0; i < states.size(); ++i) {
+    // ── existing checks ──
     if (!states[i].received) {
       reason = joints[i].name + ": missing feedback";
       return true;
@@ -330,7 +353,75 @@ bool safetyFault(
       reason = joints[i].name + ": over temperature";
       return true;
     }
+    // Early temperature warning (once per joint per threshold crossing)
+    static constexpr double kWarnTempC = 65.0;
+    static std::array<bool, opendoge::kNumJoints> temp_warned{};
+    if (states[i].temperature >= kWarnTempC &&
+        states[i].temperature < safety.over_temperature_c &&
+        !temp_warned[i]) {
+      std::cerr << "Warning: " << joints[i].name << " temperature "
+                << states[i].temperature << " C (limit " << safety.over_temperature_c << ")\n";
+      temp_warned[i] = true;
+    }
+    if (states[i].temperature < kWarnTempC - 5.0) {
+      temp_warned[i] = false;  // reset when temperature drops
+    }
+
+    // ── sustained torque monitoring ──
+    const double max_torque_val = calibration[i].max_torque > 0.0
+      ? calibration[i].max_torque : safety.torque_threshold;
+    const double abs_torque = std::abs(states[i].torque);
+    if (abs_torque > max_torque_val) {
+      if (safety_state[i].torque_exceeded_since_s == 0.0) {
+        safety_state[i].torque_exceeded_since_s = now_s;
+      } else if (now_s - safety_state[i].torque_exceeded_since_s > safety.torque_timeout_s) {
+        reason = joints[i].name + ": torque " + std::to_string(abs_torque)
+          + " Nm > " + std::to_string(max_torque_val) + " Nm for "
+          + std::to_string(now_s - safety_state[i].torque_exceeded_since_s) + "s";
+        return true;
+      }
+    } else {
+      safety_state[i].torque_exceeded_since_s = 0.0;
+    }
+
+    // ── sustained joint tracking error (only when sending targets) ──
+    if (runtime_state == RuntimeState::ActivePC
+        || runtime_state == RuntimeState::ActiveRL
+        || runtime_state == RuntimeState::EnteringPosition
+        || runtime_state == RuntimeState::LowGainTest) {
+      const double logical_actual = opendoge::logicalPosition(states[i].position, calibration[i]);
+      const double error = std::abs(logical_target[i] - logical_actual);
+      if (error > safety.tracking_error_threshold) {
+        if (safety_state[i].tracking_error_since_s == 0.0) {
+          safety_state[i].tracking_error_since_s = now_s;
+        } else if (now_s - safety_state[i].tracking_error_since_s > safety.tracking_error_timeout_s) {
+          reason = joints[i].name + ": tracking error " + std::to_string(error)
+            + " rad > " + std::to_string(safety.tracking_error_threshold) + " rad for "
+            + std::to_string(now_s - safety_state[i].tracking_error_since_s) + "s";
+          return true;
+        }
+      } else {
+        safety_state[i].tracking_error_since_s = 0.0;
+      }
+    }
   }
+
+  // ── IMU-based fall detection ──
+  if (imu.valid) {
+    static double fall_since_s = 0.0;
+    if (imu.projected_gravity[2] < safety.fall_gravity_z_threshold) {
+      if (fall_since_s == 0.0) {
+        fall_since_s = now_s;
+      } else if (now_s - fall_since_s > safety.fall_timeout_s) {
+        reason = "fall detected: gravity.z=" + std::to_string(imu.projected_gravity[2])
+          + " < " + std::to_string(safety.fall_gravity_z_threshold);
+        return true;
+      }
+    } else {
+      fall_since_s = 0.0;
+    }
+  }
+
   return false;
 }
 
@@ -487,15 +578,22 @@ int main(int argc, char ** argv)
   safety.safe_kd = config.safe_kd;
   safety.state_timeout_s = config.state_timeout_s;
   safety.over_temperature_c = config.over_temperature_c;
+  safety.torque_threshold = config.torque_threshold;
+  safety.torque_timeout_s = config.torque_timeout_s;
+  safety.tracking_error_threshold = config.tracking_error_threshold;
+  safety.tracking_error_timeout_s = config.tracking_error_timeout_s;
+  safety.command_timeout_s = config.command_timeout_s;
+  safety.fall_gravity_z_threshold = config.fall_gravity_z_threshold;
+  safety.fall_timeout_s = config.fall_timeout_s;
   opendoge::OperatorCommand command = opt.static_command;
   opendoge::ImuSample imu;
   imu.valid = opt.allow_missing_imu;
-  bool fault_latched = false;
   std::string fault_reason;
   double next_input_s = start_s;
   LoopStats loop_stats;
   double pc_startup_start_s{0.0};
   bool rl_fallback_active{false};
+  std::array<JointSafetyState, opendoge::kNumJoints> safety_state{};
   std::uint64_t last_can_sent = 0;
   std::uint64_t last_can_received = 0;
 
@@ -508,7 +606,6 @@ int main(int argc, char ** argv)
     if (!opt.dry_run) {
       can.drain(states, t);
       if (!can.ok()) {
-        fault_latched = true;
         fault_reason = can.lastError();
         runtime_state = RuntimeState::DampingFault;
       }
@@ -523,19 +620,54 @@ int main(int argc, char ** argv)
 
     if (t >= next_input_s) {
       if (!opendoge::readCommandFile(opt.command_file, command, error)) {
-        fault_latched = true;
         fault_reason = error;
         runtime_state = RuntimeState::DampingFault;
       }
       command.active = command.active || opt.start_active;
       if (command.estop) {
-        fault_latched = true;
         fault_reason = "operator estop";
         runtime_state = RuntimeState::DampingFault;
       }
 
+      // Command timeout: if the command file hasn't been touched recently
+      // and the robot is active, zero out commands and drop to Ready.
+      if (!opt.dry_run && command.active && !opt.command_file.empty()) {
+        struct stat cmd_stat {};
+        if (::stat(opt.command_file.c_str(), &cmd_stat) == 0) {
+          const double file_age_s = t - std::max(
+            static_cast<double>(cmd_stat.st_mtime),
+            static_cast<double>(cmd_stat.st_ctime));
+          if (file_age_s > safety.command_timeout_s) {
+            std::cerr << "Warning: command file stale for "
+                      << file_age_s << "s, zeroing commands\n";
+            command.vx = 0.0;
+            command.vy = 0.0;
+            command.yaw_rate = 0.0;
+            command.active = false;
+          }
+        }
+      }
+
+      // Apply command smoothing (EMA low-pass filter)
+      if (config.command_smoothing_alpha > 0.0) {
+        static opendoge::OperatorCommand smooth_cmd = command;
+        const double a = config.command_smoothing_alpha;
+        smooth_cmd.vx = a * command.vx + (1.0 - a) * smooth_cmd.vx;
+        smooth_cmd.vy = a * command.vy + (1.0 - a) * smooth_cmd.vy;
+        smooth_cmd.yaw_rate = a * command.yaw_rate + (1.0 - a) * smooth_cmd.yaw_rate;
+        command.vx = smooth_cmd.vx;
+        command.vy = smooth_cmd.vy;
+        command.yaw_rate = smooth_cmd.yaw_rate;
+        // Pass through boolean fields unchanged
+        smooth_cmd.active = command.active;
+        smooth_cmd.estop = command.estop;
+        smooth_cmd.position_control = command.position_control;
+        smooth_cmd.rl_inference = command.rl_inference;
+        smooth_cmd.clear_fault = command.clear_fault;
+        smooth_cmd.low_gain_mode = command.low_gain_mode;
+      }
+
       if (!opendoge::readImuFile(opt.imu_file, imu, t, error)) {
-        fault_latched = true;
         fault_reason = error;
         runtime_state = RuntimeState::DampingFault;
       }
@@ -545,22 +677,55 @@ int main(int argc, char ** argv)
       next_input_s = t + 0.005;
     }
 
-    if (!fault_latched && !opt.dry_run && runtime_state != RuntimeState::WaitFeedback) {
+    if (!opt.dry_run && runtime_state != RuntimeState::WaitFeedback) {
       std::string safety_reason;
-      if (safetyFault(states, joints, safety, t, safety_reason)) {
-        fault_latched = true;
+      const bool fault_now = safetyFault(states, joints, config.joints, safety, runtime_state,
+            limited_target, imu, safety_state, t, safety_reason);
+      if (fault_now) {
         fault_reason = safety_reason;
         runtime_state = RuntimeState::DampingFault;
+      } else if (runtime_state == RuntimeState::DampingFault && command.clear_fault) {
+        // Fault condition cleared + operator acknowledges: recover.
+        bool can_ok = !opt.dry_run ? can.ok() : true;
+        if (can_ok) {
+          for (const auto & joint : joints) {
+            can.sendStop(joint, true);          // clear_fault=1
+            can.sendMotionMode(joint);          // re-arm motion mode
+            can.sendEnable(joint);              // re-enable motor
+          }
+        }
+        std::cout << "Fault cleared, transitioning to WaitFeedback"
+                  << (can_ok ? "" : " (CAN down, waiting for link)") << "\n";
+        fault_reason.clear();
+        runtime_state = RuntimeState::WaitFeedback;
+        // Reset per-joint safety timers + feedback tracking
+        for (auto & ss : safety_state) {
+          ss = JointSafetyState{};
+        }
+        for (auto & st : states) {
+          st.received = false;  // force fresh feedback after recovery
+        }
+        // Consume the clear_fault pulse so it doesn't re-trigger
+        command.clear_fault = false;
       }
     }
 
-    if (!fault_latched) {
-      // 模式互斥：若两者同时为 true，RL 推理优先
+    // ── state transitions (non-fault paths) ──
+    if (runtime_state != RuntimeState::DampingFault) {
+      // Mode priority: if both rl_inference and position_control are true, rl_inference wins
       if (command.rl_inference && command.position_control) {
         command.position_control = false;
       }
 
       if (runtime_state == RuntimeState::WaitFeedback && allFeedbackReceived(states)) {
+        runtime_state = RuntimeState::Ready;
+      }
+
+      // Ready ↔ LowGainTest ↔ Active transitions
+      if (runtime_state == RuntimeState::Ready && command.low_gain_mode) {
+        runtime_state = RuntimeState::LowGainTest;
+      }
+      if (runtime_state == RuntimeState::LowGainTest && !command.low_gain_mode) {
         runtime_state = RuntimeState::Ready;
       }
 
@@ -573,7 +738,7 @@ int main(int argc, char ** argv)
         }
       }
 
-      // EnteringPosition：验证关节位置 + 检查斜坡完成
+      // EnteringPosition: verify joint positions + check ramp completion
       if (runtime_state == RuntimeState::EnteringPosition) {
         if (!command.active) {
           runtime_state = RuntimeState::Ready;
@@ -589,7 +754,6 @@ int main(int argc, char ** argv)
             }
           }
           if (!positions_valid) {
-            fault_latched = true;
             fault_reason = "position control startup: joint deviation exceeds limit";
             runtime_state = RuntimeState::DampingFault;
           } else if (t - pc_startup_start_s >= config.pc_startup_ramp_s) {
@@ -604,7 +768,7 @@ int main(int argc, char ** argv)
         rl_fallback_active = false;
       }
 
-      // ActivePC ↔ ActiveRL 切换
+      // ActivePC ↔ ActiveRL switching
       if (runtime_state == RuntimeState::ActivePC && command.rl_inference) {
         runtime_state = RuntimeState::ActiveRL;
       }
@@ -616,17 +780,23 @@ int main(int argc, char ** argv)
 
     if (t >= next_infer_s) {
       ++loop_stats.inference_ticks;
-      if (runtime_state == RuntimeState::ActiveRL && command.rl_inference) {
+      if ((runtime_state == RuntimeState::ActiveRL || runtime_state == RuntimeState::EnteringPosition
+           || runtime_state == RuntimeState::ActivePC) && command.active) {
         phase = advancePhase(command, phase, 1.0 / config.inference_hz);
         obs = buildObservation(states, config.joints, default_pos, last_action, command, imu, phase);
         if (!policy->infer(obs, action, error)) {
-          // 优雅降级：RL 推理失败回退到位置控制，不进入 DampingFault
-          runtime_state = RuntimeState::ActivePC;
-          rl_fallback_active = true;
-          action.fill(0.0);
+          // Graceful degradation: RL inference failed, fall back to position control, not DampingFault
+          if (runtime_state == RuntimeState::ActiveRL) {
+            runtime_state = RuntimeState::ActivePC;
+            rl_fallback_active = true;
+            action.fill(0.0);
+          } else {
+            fault_reason = "policy infer failed: " + error;
+            runtime_state = RuntimeState::DampingFault;
+          }
         }
       } else {
-        // 位置控制模式 / EnteringPosition / 非活跃状态：action 清零
+        // Position control mode / EnteringPosition / non-active: clear actions
         action.fill(0.0);
       }
       next_infer_s = t + 1.0 / config.inference_hz;
@@ -634,10 +804,17 @@ int main(int argc, char ** argv)
 
     if (t >= next_target_s) {
       ++loop_stats.target_ticks;
+      const bool low_gain = runtime_state == RuntimeState::LowGainTest;
       for (std::size_t i = 0; i < opendoge::kNumJoints; ++i) {
         const auto & joint_cfg = config.joints[i];
         last_action[i] = std::clamp(action[i], -1.0, 1.0);
-        logical_target[i] = default_pos[i] + last_action[i] * config.action_scale;
+        if (low_gain) {
+          // LowGainTest: override to static default pose so safety
+          // tracking-error checks use the same reference as motor commands.
+          logical_target[i] = default_pos[i];
+        } else {
+          logical_target[i] = default_pos[i] + last_action[i] * config.action_scale;
+        }
         logical_target[i] = std::clamp(logical_target[i], joint_cfg.lower, joint_cfg.upper);
         limited_target[i] = rateLimit(logical_target[i], limited_target[i], joint_cfg.max_position_step);
       }
@@ -654,9 +831,10 @@ int main(int argc, char ** argv)
       const bool is_active = runtime_state == RuntimeState::ActivePC
                           || runtime_state == RuntimeState::ActiveRL;
       const bool is_ramping = runtime_state == RuntimeState::EnteringPosition;
+      const bool low_gain = runtime_state == RuntimeState::LowGainTest;
       for (std::size_t i = 0; i < opendoge::kNumJoints; ++i) {
         const auto & joint_cfg = config.joints[i];
-        if (!is_active && !is_ramping) {
+        if (!is_active && !is_ramping && !low_gain) {
           // 阻尼模式：kp=0, kd=safe_kd
           commands[i] = {states[i].position, 0.0, 0.0, 0.0, config.safe_kd};
         } else if (is_ramping) {
@@ -672,16 +850,23 @@ int main(int argc, char ** argv)
             ramp_kp,
             ramp_kd};
         } else {
-          // 满 PD 控制
+          double effective_kp = config.kp;
+          double effective_kd = config.kd;
+          double target = limited_target[i];
+          if (low_gain) {
+            // Reduced gains + hold default standing pose for safety
+            effective_kp = std::min(config.kp * 0.3, joint_cfg.max_kp);
+            effective_kd = std::min(config.kd * 0.3, joint_cfg.max_kd);
+            target = opendoge::motorPosition(default_pos[i], joint_cfg);
+          }
           commands[i] = {
-            opendoge::motorPosition(limited_target[i], joint_cfg),
+            target,
             0.0,
             0.0,
-            std::min(config.kp, joint_cfg.max_kp),
-            std::min(config.kd, joint_cfg.max_kd)};
+            std::min(effective_kp, joint_cfg.max_kp),
+            std::min(effective_kd, joint_cfg.max_kd)};
         }
         if (!opt.dry_run && !can.sendMotion(joints[i], commands[i])) {
-          fault_latched = true;
           fault_reason = can.lastError();
           runtime_state = RuntimeState::DampingFault;
         }
@@ -697,6 +882,7 @@ int main(int argc, char ** argv)
                 << " active_cmd=" << (command.active ? 1 : 0)
                 << " pos_ctrl=" << (command.position_control ? 1 : 0)
                 << " rl_infer=" << (command.rl_inference ? 1 : 0)
+                << " low_gain=" << (command.low_gain_mode ? 1 : 0)
                 << " imu=" << (imu.valid ? 1 : 0)
                 << " ctrl_ticks=" << loop_stats.control_ticks
                 << " infer_ticks=" << loop_stats.inference_ticks
@@ -709,10 +895,69 @@ int main(int argc, char ** argv)
                 << " ramp_pct=" << (runtime_state == RuntimeState::EnteringPosition
                   ? static_cast<int>(100.0 * (t - pc_startup_start_s) / config.pc_startup_ramp_s) : 100)
                 << " rl_fb=" << (rl_fallback_active ? 1 : 0);
-      if (fault_latched) {
+      if (runtime_state == RuntimeState::DampingFault) {
         std::cout << " fault=\"" << fault_reason << "\"";
       }
       std::cout << "\n";
+
+      // Write JSON status snapshot for external consumers (web console, etc.)
+      if (!opt.status_file.empty()) {
+        std::ofstream sf(opt.status_file + ".tmp");
+        if (sf) {
+          sf << "{";
+          sf << "\"t\":" << t << ",";
+          sf << "\"state\":\"" << stateName(runtime_state) << "\",";
+          sf << "\"active_cmd\":" << (command.active ? "true" : "false") << ",";
+          sf << "\"estop\":" << (command.estop ? "true" : "false") << ",";
+          sf << "\"position_control\":" << (command.position_control ? "true" : "false") << ",";
+          sf << "\"rl_inference\":" << (command.rl_inference ? "true" : "false") << ",";
+          sf << "\"low_gain\":" << (command.low_gain_mode ? "true" : "false") << ",";
+          sf << "\"imu_valid\":" << (imu.valid ? "true" : "false") << ",";
+          sf << "\"fault_reason\":\"";
+          if (runtime_state == RuntimeState::DampingFault) {
+            for (char c : fault_reason) {
+              if (c == '"' || c == '\\') sf << '\\';
+              sf << c;
+            }
+          }
+          sf << "\",";
+          sf << "\"ctrl_ticks\":" << loop_stats.control_ticks << ",";
+          sf << "\"infer_ticks\":" << loop_stats.inference_ticks << ",";
+          sf << "\"max_late_us\":" << static_cast<int>(loop_stats.max_control_late_s * 1.0e6) << ",";
+          sf << "\"missed_ctrl\":" << loop_stats.missed_control_deadlines << ",";
+          sf << "\"can_tx\":" << sent_delta << ",";
+          sf << "\"can_rx\":" << recv_delta << ",";
+          sf << "\"can_err\":" << (can_stats.read_errors + can_stats.write_errors) << ",";
+          sf << "\"command\":[" << command.vx << "," << command.vy << "," << command.yaw_rate << "],";
+          // Per-joint state
+          sf << "\"joints\":[";
+          for (std::size_t i = 0; i < opendoge::kNumJoints; ++i) {
+            if (i > 0) sf << ",";
+            const double logical_pos = opendoge::logicalPosition(states[i].position, config.joints[i]);
+            sf << "{\"n\":\"" << joints[i].name << "\","
+               << "\"q\":" << logical_pos << ","
+               << "\"dq\":" << opendoge::logicalVelocity(states[i].velocity, config.joints[i]) << ","
+               << "\"tau\":" << states[i].torque << ","
+               << "\"temp\":" << states[i].temperature << ","
+               << "\"fault\":" << states[i].fault << ","
+               << "\"recv\":" << (states[i].received ? "true" : "false") << "}";
+          }
+          sf << "],";
+          // IMU
+          sf << "\"imu\":{";
+          sf << "\"wx\":" << imu.angular_velocity[0] << ","
+             << "\"wy\":" << imu.angular_velocity[1] << ","
+             << "\"wz\":" << imu.angular_velocity[2] << ","
+             << "\"gx\":" << imu.projected_gravity[0] << ","
+             << "\"gy\":" << imu.projected_gravity[1] << ","
+             << "\"gz\":" << imu.projected_gravity[2];
+          sf << "}";
+          sf << "}\n";
+          sf.close();
+          std::rename((opt.status_file + ".tmp").c_str(), opt.status_file.c_str());
+        }
+      }
+
       loop_stats.resetWindow();
       last_can_sent = can_stats.frames_sent;
       last_can_received = can_stats.frames_received;
@@ -731,9 +976,9 @@ int main(int argc, char ** argv)
   }
 
   std::cout << "OpenDoge deploy stopped";
-  if (fault_latched) {
+  if (runtime_state == RuntimeState::DampingFault) {
     std::cout << " with fault: " << fault_reason;
   }
   std::cout << "\n";
-  return fault_latched ? 2 : 0;
+  return runtime_state == RuntimeState::DampingFault ? 2 : 0;
 }
