@@ -118,6 +118,8 @@ class RobotCommand:
     yaw_rate: float = 0.0
     active: bool = False
     estop: bool = False
+    position_control: bool = False
+    rl_inference: bool = False
 
 
 class XboxCommandMapper:
@@ -125,8 +127,8 @@ class XboxCommandMapper:
 
     BUTTON_A = 0
     BUTTON_B = 1
-    BUTTON_X = 2
-    BUTTON_Y = 3
+    BUTTON_X = 3
+    BUTTON_Y = 4
     BUTTON_BACK = 6
     BUTTON_START = 7
     BUTTON_RB = 5
@@ -141,6 +143,13 @@ class XboxCommandMapper:
         axis_vx: int = 1,
         axis_yaw: int = 3,
         require_rb: bool = False,
+        btn_a: int | None = None,
+        btn_b: int | None = None,
+        btn_x: int | None = None,
+        btn_y: int | None = None,
+        btn_back: int | None = None,
+        btn_start: int | None = None,
+        btn_rb: int | None = None,
     ):
         self.max_vx = max_vx
         self.max_vy = max_vy
@@ -150,10 +159,19 @@ class XboxCommandMapper:
         self.axis_vx = axis_vx
         self.axis_yaw = axis_yaw
         self.require_rb = require_rb
+        self.btn_a = btn_a if btn_a is not None else self.BUTTON_A
+        self.btn_b = btn_b if btn_b is not None else self.BUTTON_B
+        self.btn_x = btn_x if btn_x is not None else self.BUTTON_X
+        self.btn_y = btn_y if btn_y is not None else self.BUTTON_Y
+        self.btn_back = btn_back if btn_back is not None else self.BUTTON_BACK
+        self.btn_start = btn_start if btn_start is not None else self.BUTTON_START
+        self.btn_rb = btn_rb if btn_rb is not None else self.BUTTON_RB
         self.axes: Dict[int, float] = {}
         self.buttons: Dict[int, bool] = {}
         self.active_requested = False
         self.estop = False
+        self.position_control = False
+        self.rl_inference = False
 
     def update(self, events: Iterable[JoystickEvent]) -> None:
         for event in events:
@@ -171,7 +189,7 @@ class XboxCommandMapper:
         yaw_axis = apply_deadzone(self.axes.get(self.axis_yaw, 0.0), self.deadzone)
 
         active = self.active_requested and not self.estop
-        if self.require_rb and not self.buttons.get(self.BUTTON_RB, False):
+        if self.require_rb and not self.buttons.get(self.btn_rb, False):
             active = False
 
         if not active:
@@ -179,29 +197,47 @@ class XboxCommandMapper:
             vy_axis = 0.0
             yaw_axis = 0.0
 
+        # 未激活或急停时，模式标志强制为 false，保证输出一致性
         return RobotCommand(
             vx=vx_axis * self.max_vx,
             vy=vy_axis * self.max_vy,
             yaw_rate=yaw_axis * self.max_yaw_rate,
             active=active,
             estop=self.estop,
+            position_control=self.position_control if active else False,
+            rl_inference=self.rl_inference if active else False,
         )
 
     def _handle_button_down(self, button: int) -> None:
-        if button == self.BUTTON_A:
+        # A: 启动机器人并进入位置控制模式
+        if button == self.btn_a:
             self.estop = False
             self.active_requested = True
-        elif button == self.BUTTON_B:
+            self.position_control = True
+            self.rl_inference = False
+        # B: 机器人失能（电机发送保护指令）
+        elif button == self.btn_b:
             self.active_requested = False
-        elif button == self.BUTTON_START:
+            self.position_control = False
+            self.rl_inference = False
+        # X: 仅在位置控制模式下可进入 RL 推理状态
+        elif button == self.btn_x:
+            if self.position_control and self.active_requested and not self.estop:
+                self.rl_inference = True
+                self.position_control = False
+        # Y: 仅在 RL 推理状态下可退出，回到位置控制模式
+        elif button == self.btn_y:
+            if self.rl_inference and self.active_requested and not self.estop:
+                self.rl_inference = False
+                self.position_control = True
+        elif button == self.btn_start:
             if not self.estop:
                 self.active_requested = not self.active_requested
-        elif button in (self.BUTTON_X, self.BUTTON_BACK):
+        elif button == self.btn_back:
             self.estop = True
             self.active_requested = False
-        elif button == self.BUTTON_Y:
-            self.estop = False
-            self.active_requested = False
+            self.position_control = False
+            self.rl_inference = False
 
 
 def format_command_file(command: RobotCommand) -> str:
@@ -211,6 +247,8 @@ def format_command_file(command: RobotCommand) -> str:
         f"yaw_rate={command.yaw_rate:.6f}\n"
         f"active={'true' if command.active else 'false'}\n"
         f"estop={'true' if command.estop else 'false'}\n"
+        f"position_control={'true' if command.position_control else 'false'}\n"
+        f"rl_inference={'true' if command.rl_inference else 'false'}\n"
     )
 
 
