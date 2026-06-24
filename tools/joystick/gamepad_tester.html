@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OpenDoge 手柄测试工具 | Gamepad Tester</title>
+<style>
+  :root {
+    --bg: #1a1a2e;
+    --surface: #16213e;
+    --surface2: #0f3460;
+    --accent: #e94560;
+    --text: #eee;
+    --text-dim: #999;
+    --green: #4ecca3;
+    --bar-bg: #1a1a2e;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 20px;
+  }
+  h1 { font-size: 1.5rem; color: var(--accent); margin-bottom: 4px; }
+  .subtitle { font-size: 0.85rem; color: var(--text-dim); margin-bottom: 20px; }
+
+  /* ---- connection banner ---- */
+  .status-bar {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 20px; border-radius: 10px; margin-bottom: 20px;
+    font-weight: 600; font-size: 0.95rem;
+    width: 100%; max-width: 700px;
+  }
+  .status-bar.connected  { background: #0a3d2e; border: 1px solid var(--green); }
+  .status-bar.disconnected { background: #3d1a1a; border: 1px solid var(--accent); }
+  .status-dot {
+    width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0;
+  }
+  .connected .status-dot  { background: var(--green); box-shadow: 0 0 8px var(--green); }
+  .disconnected .status-dot { background: var(--accent); box-shadow: 0 0 8px var(--accent); }
+
+  /* ---- main layout ---- */
+  .main {
+    display: flex; flex-wrap: wrap; gap: 20px; justify-content: center;
+    width: 100%; max-width: 700px;
+  }
+
+  /* ---- card ---- */
+  .card {
+    background: var(--surface); border-radius: 14px; padding: 18px 20px;
+    flex: 1 1 100%; min-width: 280px;
+    box-shadow: 0 4px 20px rgba(0,0,0,.35);
+  }
+  .card h2 {
+    font-size: 1.05rem; margin-bottom: 14px; color: var(--accent);
+    border-bottom: 1px solid var(--surface2); padding-bottom: 8px;
+  }
+
+  /* ---- axes ---- */
+  .axis-row {
+    display: flex; align-items: center; gap: 12px; margin-bottom: 10px;
+  }
+  .axis-label {
+    width: 120px; font-size: 0.85rem; color: var(--text-dim);
+    text-align: right; flex-shrink: 0;
+  }
+  .axis-bar-track {
+    flex: 1; height: 20px; background: var(--bar-bg);
+    border-radius: 10px; position: relative; overflow: hidden;
+  }
+  .axis-bar-fill {
+    height: 100%; border-radius: 10px;
+    transition: width 40ms linear, background 40ms linear;
+    position: absolute; left: 50%; width: 0;
+  }
+  .axis-bar-fill.positive { background: var(--green); border-radius: 0 10px 10px 0; }
+  .axis-bar-fill.negative { background: var(--accent); border-radius: 10px 0 0 10px; }
+  .axis-bar-center {
+    position: absolute; left: 50%; top: 0; bottom: 0;
+    width: 2px; background: var(--text-dim); opacity: 0.5; z-index: 1;
+  }
+  .axis-value {
+    width: 60px; font-size: 0.82rem;
+    font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+    text-align: right; flex-shrink: 0;
+  }
+
+  /* ---- buttons ---- */
+  .button-grid {
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px;
+  }
+  .btn-chip {
+    padding: 10px 6px; border-radius: 10px; text-align: center;
+    font-size: 0.8rem; font-weight: 600;
+    background: var(--surface2); color: var(--text-dim);
+    border: 2px solid transparent;
+    transition: all 60ms linear; white-space: nowrap;
+  }
+  .btn-chip.pressed {
+    background: var(--accent); color: #fff;
+    border-color: #ff6b81; box-shadow: 0 0 14px rgba(233, 69, 96, 0.5);
+    transform: scale(1.04);
+  }
+  .btn-chip .analog-bar {
+    display: block; height: 4px; margin-top: 4px; border-radius: 2px;
+    background: rgba(255,255,255,0.2);
+  }
+  .btn-chip.pressed .analog-bar { background: rgba(255,255,255,0.6); }
+
+  /* ---- raw data table ---- */
+  .raw-table {
+    width: 100%; font-size: 0.82rem; border-collapse: collapse;
+  }
+  .raw-table th {
+    text-align: left; color: var(--text-dim); font-weight: 500;
+    padding: 4px 10px; border-bottom: 1px solid var(--surface2);
+  }
+  .raw-table td {
+    padding: 4px 10px;
+    font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+    font-size: 0.78rem;
+  }
+  .raw-table tr:hover td { background: var(--surface2); }
+  .raw-val-changed { color: var(--accent); font-weight: 600; }
+
+  /* ---- footer ---- */
+  .hint {
+    margin-top: 16px; font-size: 0.78rem; color: var(--text-dim); text-align: center;
+  }
+</style>
+</head>
+<body>
+
+<h1>🎮 OpenDoge 手柄测试工具</h1>
+<p class="subtitle">Gamepad Tester — 盖世小鸡启明星 · Xbox 经典布局</p>
+
+<div class="status-bar disconnected" id="statusBar">
+  <span class="status-dot"></span>
+  <span id="statusText">未检测到手柄 — 请连接手柄后按任意键激活</span>
+</div>
+
+<div class="main">
+
+  <div class="card" id="dataCard">
+    <h2>📊 摇杆 / 轴值</h2>
+    <div id="axesContainer">
+      <div class="axis-row" style="color:var(--text-dim);">等待手柄数据...</div>
+    </div>
+
+    <h2 style="margin-top:20px;">🔘 按键状态</h2>
+    <div class="button-grid" id="buttonGrid">
+      <div class="btn-chip" style="color:var(--text-dim);">等待手柄数据...</div>
+    </div>
+  </div>
+
+</div>
+
+<div class="card" style="max-width:700px; width:100%; margin-top:20px;" id="rawCard">
+  <h2>🔍 原始数据 (Raw Debug)</h2>
+  <div style="overflow-x:auto;">
+    <table class="raw-table" id="rawTable">
+      <thead>
+        <tr><th>索引</th><th>类型</th><th>值</th><th>名称</th></tr>
+      </thead>
+      <tbody id="rawBody">
+        <tr><td colspan="4" style="color:var(--text-dim);">请连接手柄...</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<p class="hint">
+  连接手柄后按任意键激活 | 刷新页面重新扫描 | 对照按键确认键位是否正确
+</p>
+
+<script>
+// ============================================================
+// Gamepad Tester for OpenDoge — Web Gamepad API
+// ============================================================
+
+const statusBar     = document.getElementById('statusBar');
+const statusText    = document.getElementById('statusText');
+const axesContainer = document.getElementById('axesContainer');
+const buttonGrid    = document.getElementById('buttonGrid');
+const rawBody       = document.getElementById('rawBody');
+
+let prevVals = {};
+
+// Standard Gamepad mapping labels
+const AXIS_NAMES = [
+  '左摇杆 X (vy)',   // 0
+  '左摇杆 Y (vx)',   // 1
+  '右摇杆 X (yaw)',  // 2
+  '右摇杆 Y',        // 3
+];
+
+const BUTTON_NAMES = [
+  'A',      // 0
+  'B',      // 1
+  'X',      // 2
+  'Y',      // 3
+  'LB',     // 4
+  'RB',     // 5
+  'LT',     // 6
+  'RT',     // 7
+  'BACK',   // 8
+  'START',  // 9
+  'L3',     // 10
+  'R3',     // 11
+  '↑',      // 12
+  '↓',      // 13
+  '←',      // 14
+  '→',      // 15
+  'HOME',   // 16
+];
+
+// ============================================================
+function update() {
+  const gamepads = navigator.getGamepads ? navigator.getGamepads() : [];
+  let gp = null;
+  for (const g of gamepads) {
+    if (g) { gp = g; break; }
+  }
+
+  if (!gp) {
+    setDisconnected();
+    requestAnimationFrame(update);
+    return;
+  }
+
+  setConnected(gp);
+  updateAxes(gp);
+  updateButtons(gp);
+  updateRaw(gp);
+  requestAnimationFrame(update);
+}
+
+// ============================================================
+function setConnected(gp) {
+  statusBar.className = 'status-bar connected';
+  statusText.textContent = `已连接: ${gp.id} | ${gp.axes.length} 轴 · ${gp.buttons.length} 按键`;
+}
+
+function setDisconnected() {
+  statusBar.className = 'status-bar disconnected';
+  statusText.textContent = '未检测到手柄 — 请连接手柄后按任意键激活';
+}
+
+// ============================================================
+function updateAxes(gp) {
+  const count = gp.axes.length;
+  let html = '';
+  for (let i = 0; i < count; i++) {
+    const val = gp.axes[i];
+    const name = i < AXIS_NAMES.length ? AXIS_NAMES[i] : `轴 ${i}`;
+    const pct = val * 50;
+    const absPct = Math.abs(pct);
+    const side = val >= 0 ? 'positive' : 'negative';
+    const color = Math.abs(val) < 0.08 ? 'var(--text-dim)' : (val >= 0 ? 'var(--green)' : 'var(--accent)');
+
+    html += `
+      <div class="axis-row">
+        <span class="axis-label">${name}</span>
+        <div class="axis-bar-track">
+          <div class="axis-bar-center"></div>
+          <div class="axis-bar-fill ${side}" style="width:${absPct}%"></div>
+        </div>
+        <span class="axis-value" style="color:${color}">${val.toFixed(4)}</span>
+      </div>`;
+  }
+  axesContainer.innerHTML = html;
+}
+
+// ============================================================
+function updateButtons(gp) {
+  const count = gp.buttons.length;
+  let html = '';
+  for (let i = 0; i < count; i++) {
+    const btn = gp.buttons[i];
+    const pressed = btn.pressed;
+    const value = btn.value;
+    const name = i < BUTTON_NAMES.length ? BUTTON_NAMES[i] : `B${i}`;
+    const cls = pressed ? 'btn-chip pressed' : 'btn-chip';
+    const barW = Math.round(value * 100);
+
+    html += `
+      <div class="${cls}">
+        ${name}
+        <span class="analog-bar" style="width:${barW}%"></span>
+      </div>`;
+  }
+  buttonGrid.innerHTML = html;
+}
+
+// ============================================================
+function updateRaw(gp) {
+  const rows = [];
+
+  for (let i = 0; i < gp.axes.length; i++) {
+    const name = i < AXIS_NAMES.length ? AXIS_NAMES[i] : `Axis ${i}`;
+    const val = gp.axes[i].toFixed(4);
+    const key = `a${i}`;
+    const changed = prevVals[key] !== undefined && prevVals[key] !== val;
+    prevVals[key] = val;
+    rows.push({ idx: i, type: '轴 Axis', val, name, changed });
+  }
+
+  for (let i = 0; i < gp.buttons.length; i++) {
+    const btn = gp.buttons[i];
+    const name = i < BUTTON_NAMES.length ? BUTTON_NAMES[i] : `Button ${i}`;
+    const val = btn.value.toFixed(4) + (btn.pressed ? ' ⬇' : '');
+    const key = `b${i}`;
+    const changed = prevVals[key] !== undefined && prevVals[key] !== val;
+    prevVals[key] = val;
+    rows.push({ idx: i, type: '按键 Button', val, name, changed });
+  }
+
+  let html = '';
+  for (const r of rows) {
+    const cls = r.changed ? 'raw-val-changed' : '';
+    html += `<tr>
+      <td>${r.idx}</td><td>${r.type}</td>
+      <td class="${cls}">${r.val}</td><td>${r.name}</td>
+    </tr>`;
+  }
+  rawBody.innerHTML = html;
+}
+
+// ============================================================
+window.addEventListener('gamepadconnected', (e) => {
+  console.log('Gamepad connected:', e.gamepad.id);
+});
+window.addEventListener('gamepaddisconnected', (e) => {
+  console.log('Gamepad disconnected:', e.gamepad.id);
+  prevVals = {};
+});
+
+requestAnimationFrame(update);
+</script>
+</body>
+</html>
