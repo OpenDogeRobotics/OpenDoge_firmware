@@ -23,7 +23,7 @@ SYMLINK_DIR="${DEPS_DIR}/onnxruntime"
 ARCH="$(uname -m)"
 case "$ARCH" in
   x86_64)  ONNX_ARCH="x64" ;;
-  aarch64) ONNX_ARCH="arm64" ;;
+  aarch64) ONNX_ARCH="aarch64" ;;
   *)
     echo "Error: unsupported architecture: $ARCH"
     exit 1

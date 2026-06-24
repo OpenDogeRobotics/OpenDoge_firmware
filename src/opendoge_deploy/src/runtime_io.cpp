@@ -184,6 +184,12 @@ bool readCommandFile(const std::string & path, OperatorCommand & command, std::s
     if (nums.size() > 4) {
       command.estop = nums[4] != 0.0;
     }
+    if (nums.size() > 5) {
+      command.position_control = nums[5] != 0.0;
+    }
+    if (nums.size() > 6) {
+      command.rl_inference = nums[6] != 0.0;
+    }
     error.clear();
     return true;
   }
@@ -194,6 +200,8 @@ bool readCommandFile(const std::string & path, OperatorCommand & command, std::s
     command.yaw_rate = getDouble(values, "yaw_rate", command.yaw_rate);
     command.active = getBool(values, "active", command.active);
     command.estop = getBool(values, "estop", command.estop);
+    command.position_control = getBool(values, "position_control", command.position_control);
+    command.rl_inference = getBool(values, "rl_inference", command.rl_inference);
   } catch (const std::exception & exc) {
     error = "bad command file " + path + ": " + exc.what();
     return false;

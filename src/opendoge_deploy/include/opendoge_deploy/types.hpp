@@ -92,6 +92,8 @@ struct OperatorCommand
   double yaw_rate{0.0};
   bool active{false};
   bool estop{false};
+  bool position_control{false};
+  bool rl_inference{false};
 };
 
 struct ImuSample

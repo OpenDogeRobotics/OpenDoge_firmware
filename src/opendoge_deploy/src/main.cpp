@@ -89,7 +89,7 @@ void printUsage()
     << "  --policy-backend none|linear_csv|onnx   default: none\n"
     << "  --policy-path PATH                      ONNX or linear CSV path\n"
     << "  --config PATH                           deploy key=value config\n"
-    << "  --command-file PATH                     vx/vy/yaw_rate/active/estop input\n"
+    << "  --command-file PATH                     command.state input (vx/vy/yaw_rate/active/estop/position_control/rl_inference)\n"
     << "  --imu-file PATH                         wx/wy/wz/gx/gy/gz input\n"
     << "  --cmd VX VY YAW                         static command\n"
     << "  --real                                  open can0..can3 and send frames\n"
@@ -560,12 +560,18 @@ int main(int argc, char ** argv)
 
     if (t >= next_infer_s) {
       ++loop_stats.inference_ticks;
-      phase = advancePhase(command, phase, 1.0 / config.inference_hz);
-      obs = buildObservation(states, config.joints, default_pos, last_action, command, imu, phase);
-      if (!policy->infer(obs, action, error)) {
-        fault_latched = true;
-        fault_reason = "policy infer failed: " + error;
-        runtime_state = RuntimeState::DampingFault;
+      // 仅在 RL 推理模式下执行 ONNX 策略推理
+      if (command.rl_inference && command.active) {
+        phase = advancePhase(command, phase, 1.0 / config.inference_hz);
+        obs = buildObservation(states, config.joints, default_pos, last_action, command, imu, phase);
+        if (!policy->infer(obs, action, error)) {
+          fault_latched = true;
+          fault_reason = "policy infer failed: " + error;
+          runtime_state = RuntimeState::DampingFault;
+        }
+      } else {
+        // 位置控制模式：不跑策略，action 清零，电机保持默认位姿
+        action.fill(0.0);
       }
       next_infer_s = t + 1.0 / config.inference_hz;
     }
@@ -617,6 +623,8 @@ int main(int argc, char ** argv)
       const auto recv_delta = can_stats.frames_received - last_can_received;
       std::cout << "state=" << stateName(runtime_state)
                 << " active_cmd=" << (command.active ? 1 : 0)
+                << " pos_ctrl=" << (command.position_control ? 1 : 0)
+                << " rl_infer=" << (command.rl_inference ? 1 : 0)
                 << " imu=" << (imu.valid ? 1 : 0)
                 << " ctrl_ticks=" << loop_stats.control_ticks
                 << " infer_ticks=" << loop_stats.inference_ticks
