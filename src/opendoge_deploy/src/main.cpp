@@ -45,7 +45,9 @@ enum class RuntimeState
 {
   WaitFeedback,
   Ready,
-  Active,
+  EnteringPosition,
+  ActivePC,
+  ActiveRL,
   DampingFault,
 };
 
@@ -56,8 +58,12 @@ const char * stateName(RuntimeState state)
       return "wait_feedback";
     case RuntimeState::Ready:
       return "ready";
-    case RuntimeState::Active:
-      return "active";
+    case RuntimeState::EnteringPosition:
+      return "entering_position";
+    case RuntimeState::ActivePC:
+      return "active_pc";
+    case RuntimeState::ActiveRL:
+      return "active_rl";
     case RuntimeState::DampingFault:
       return "damping_fault";
   }
@@ -488,6 +494,8 @@ int main(int argc, char ** argv)
   std::string fault_reason;
   double next_input_s = start_s;
   LoopStats loop_stats;
+  double pc_startup_start_s{0.0};
+  bool rl_fallback_active{false};
   std::uint64_t last_can_sent = 0;
   std::uint64_t last_can_received = 0;
 
@@ -547,30 +555,78 @@ int main(int argc, char ** argv)
     }
 
     if (!fault_latched) {
+      // 模式互斥：若两者同时为 true，RL 推理优先
+      if (command.rl_inference && command.position_control) {
+        command.position_control = false;
+      }
+
       if (runtime_state == RuntimeState::WaitFeedback && allFeedbackReceived(states)) {
         runtime_state = RuntimeState::Ready;
       }
+
       if (runtime_state == RuntimeState::Ready && command.active && (imu.valid || opt.allow_missing_imu)) {
-        runtime_state = RuntimeState::Active;
+        if (command.rl_inference) {
+          runtime_state = RuntimeState::ActiveRL;
+        } else {
+          runtime_state = RuntimeState::EnteringPosition;
+          pc_startup_start_s = t;
+        }
       }
-      if (runtime_state == RuntimeState::Active && !command.active) {
+
+      // EnteringPosition：验证关节位置 + 检查斜坡完成
+      if (runtime_state == RuntimeState::EnteringPosition) {
+        if (!command.active) {
+          runtime_state = RuntimeState::Ready;
+        } else if (command.rl_inference) {
+          runtime_state = RuntimeState::ActiveRL;
+        } else {
+          bool positions_valid = true;
+          for (std::size_t i = 0; i < opendoge::kNumJoints; ++i) {
+            const double pos = opendoge::logicalPosition(states[i].position, config.joints[i]);
+            if (std::abs(pos - default_pos[i]) > config.pc_startup_max_deviation) {
+              positions_valid = false;
+              break;
+            }
+          }
+          if (!positions_valid) {
+            fault_latched = true;
+            fault_reason = "position control startup: joint deviation exceeds limit";
+            runtime_state = RuntimeState::DampingFault;
+          } else if (t - pc_startup_start_s >= config.pc_startup_ramp_s) {
+            runtime_state = RuntimeState::ActivePC;
+          }
+        }
+      }
+
+      // ActivePC / ActiveRL → Ready
+      if ((runtime_state == RuntimeState::ActivePC || runtime_state == RuntimeState::ActiveRL) && !command.active) {
         runtime_state = RuntimeState::Ready;
+        rl_fallback_active = false;
+      }
+
+      // ActivePC ↔ ActiveRL 切换
+      if (runtime_state == RuntimeState::ActivePC && command.rl_inference) {
+        runtime_state = RuntimeState::ActiveRL;
+      }
+      if (runtime_state == RuntimeState::ActiveRL && !command.rl_inference && command.active) {
+        runtime_state = RuntimeState::ActivePC;
+        rl_fallback_active = false;
       }
     }
 
     if (t >= next_infer_s) {
       ++loop_stats.inference_ticks;
-      // 仅在 RL 推理模式下执行 ONNX 策略推理
-      if (command.rl_inference && command.active) {
+      if (runtime_state == RuntimeState::ActiveRL && command.rl_inference) {
         phase = advancePhase(command, phase, 1.0 / config.inference_hz);
         obs = buildObservation(states, config.joints, default_pos, last_action, command, imu, phase);
         if (!policy->infer(obs, action, error)) {
-          fault_latched = true;
-          fault_reason = "policy infer failed: " + error;
-          runtime_state = RuntimeState::DampingFault;
+          // 优雅降级：RL 推理失败回退到位置控制，不进入 DampingFault
+          runtime_state = RuntimeState::ActivePC;
+          rl_fallback_active = true;
+          action.fill(0.0);
         }
       } else {
-        // 位置控制模式：不跑策略，action 清零，电机保持默认位姿
+        // 位置控制模式 / EnteringPosition / 非活跃状态：action 清零
         action.fill(0.0);
       }
       next_infer_s = t + 1.0 / config.inference_hz;
@@ -595,12 +651,28 @@ int main(int argc, char ** argv)
       if (control_late_s > 0.0005) {
         ++loop_stats.missed_control_deadlines;
       }
-      const bool active = runtime_state == RuntimeState::Active;
+      const bool is_active = runtime_state == RuntimeState::ActivePC
+                          || runtime_state == RuntimeState::ActiveRL;
+      const bool is_ramping = runtime_state == RuntimeState::EnteringPosition;
       for (std::size_t i = 0; i < opendoge::kNumJoints; ++i) {
         const auto & joint_cfg = config.joints[i];
-        if (!active) {
+        if (!is_active && !is_ramping) {
+          // 阻尼模式：kp=0, kd=safe_kd
           commands[i] = {states[i].position, 0.0, 0.0, 0.0, config.safe_kd};
+        } else if (is_ramping) {
+          // 斜坡：kp/kd 从阻尼值平滑过渡到满 PD 值
+          const double ramp_elapsed = t - pc_startup_start_s;
+          const double ramp_frac = std::min(ramp_elapsed / config.pc_startup_ramp_s, 1.0);
+          const double ramp_kp = ramp_frac * std::min(config.kp, joint_cfg.max_kp);
+          const double ramp_kd = config.safe_kd + ramp_frac * (std::min(config.kd, joint_cfg.max_kd) - config.safe_kd);
+          commands[i] = {
+            opendoge::motorPosition(limited_target[i], joint_cfg),
+            0.0,
+            0.0,
+            ramp_kp,
+            ramp_kd};
         } else {
+          // 满 PD 控制
           commands[i] = {
             opendoge::motorPosition(limited_target[i], joint_cfg),
             0.0,
@@ -633,7 +705,10 @@ int main(int argc, char ** argv)
                 << " missed_ctrl=" << loop_stats.missed_control_deadlines
                 << " can_tx=" << sent_delta
                 << " can_rx=" << recv_delta
-                << " can_err=" << (can_stats.read_errors + can_stats.write_errors);
+                << " can_err=" << (can_stats.read_errors + can_stats.write_errors)
+                << " ramp_pct=" << (runtime_state == RuntimeState::EnteringPosition
+                  ? static_cast<int>(100.0 * (t - pc_startup_start_s) / config.pc_startup_ramp_s) : 100)
+                << " rl_fb=" << (rl_fallback_active ? 1 : 0);
       if (fault_latched) {
         std::cout << " fault=\"" << fault_reason << "\"";
       }

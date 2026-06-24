@@ -39,7 +39,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-yaw-rate", type=float, default=1.0, help="Max yaw rate command in rad/s")
     parser.add_argument("--axis-vy", type=int, default=0, help="Axis number for lateral command")
     parser.add_argument("--axis-vx", type=int, default=1, help="Axis number for forward command")
-    parser.add_argument("--axis-yaw", type=int, default=2, help="Axis number for yaw command")
+    parser.add_argument("--axis-yaw", type=int, default=2, help="Axis number for yaw command (right stick X)")
     parser.add_argument("--btn-a", type=int, default=None, help="Button number for A (default: 0)")
     parser.add_argument("--btn-b", type=int, default=None, help="Button number for B (default: 1)")
     parser.add_argument("--btn-x", type=int, default=None, help="Button number for X (default: 3)")

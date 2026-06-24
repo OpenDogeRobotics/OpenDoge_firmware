@@ -125,13 +125,15 @@ class RobotCommand:
 class XboxCommandMapper:
     """Maps common Xbox joystick axes/buttons to OpenDoge command fields."""
 
-    BUTTON_A = 0
-    BUTTON_B = 1
-    BUTTON_X = 3
-    BUTTON_Y = 4
-    BUTTON_BACK = 6
-    BUTTON_START = 7
-    BUTTON_RB = 5
+    # Standard Xbox 360 joystick button numbering
+    BUTTON_A = 0     # A (south)
+    BUTTON_B = 1     # B (east)
+    BUTTON_X = 2     # X (west)
+    BUTTON_Y = 3     # Y (north)
+    BUTTON_LB = 4    # left bumper
+    BUTTON_RB = 5    # right bumper
+    BUTTON_BACK = 6  # back / view
+    BUTTON_START = 7 # start / menu
 
     def __init__(
         self,
@@ -141,7 +143,7 @@ class XboxCommandMapper:
         deadzone: float,
         axis_vy: int = 0,
         axis_vx: int = 1,
-        axis_yaw: int = 3,
+        axis_yaw: int = 2,  # right stick X (xboxdrv default layout)
         require_rb: bool = False,
         btn_a: int | None = None,
         btn_b: int | None = None,

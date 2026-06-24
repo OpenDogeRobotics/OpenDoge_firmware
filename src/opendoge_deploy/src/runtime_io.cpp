@@ -130,6 +130,8 @@ bool loadDeployConfig(
     config.state_timeout_s = getDouble(values, "state_timeout_s", config.state_timeout_s);
     config.over_temperature_c = getDouble(values, "over_temperature_c", config.over_temperature_c);
     config.fault_poll_hz = getDouble(values, "fault_poll_hz", config.fault_poll_hz);
+    config.pc_startup_ramp_s = getDouble(values, "pc_startup_ramp_s", config.pc_startup_ramp_s);
+    config.pc_startup_max_deviation = getDouble(values, "pc_startup_max_deviation", config.pc_startup_max_deviation);
 
     for (std::size_t i = 0; i < joints.size(); ++i) {
       const auto prefix = "joint." + joints[i].name + ".";

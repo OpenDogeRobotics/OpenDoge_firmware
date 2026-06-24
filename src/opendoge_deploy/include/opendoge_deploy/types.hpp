@@ -82,6 +82,8 @@ struct DeployConfig
   double state_timeout_s{0.02};
   double over_temperature_c{80.0};
   double fault_poll_hz{10.0};
+  double pc_startup_ramp_s{2.0};
+  double pc_startup_max_deviation{0.25};
   std::array<JointCalibration, kNumJoints> joints{};
 };
 

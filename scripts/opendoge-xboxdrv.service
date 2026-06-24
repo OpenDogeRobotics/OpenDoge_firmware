@@ -1,0 +1,23 @@
+[Unit]
+Description=OpenDoge Xbox Controller Driver (xboxdrv)
+Documentation=https://github.com/Lain-Ego/OpenDoge_firmware
+After=multi-user.target
+Wants=multi-user.target
+
+[Service]
+Type=forking
+# Detach kernel driver and provide /dev/input/js0 as Xbox 360 compatible.
+# Change XBOX_USB_ID via drop-in or environment override if your dongle differs.
+Environment=XBOX_USB_ID=413d:2104
+ExecStart=/usr/bin/xboxdrv \
+    --device-by-id ${XBOX_USB_ID} \
+    --type xbox360 \
+    --detach-kernel-driver \
+    --silent
+# xboxdrv forks to background; if it exits early treat as failure.
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=15
+
+[Install]
+WantedBy=multi-user.target

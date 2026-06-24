@@ -95,6 +95,14 @@ start_imu_bridge() {
 }
 
 start_joystick_bridge() {
+  # If the systemd service is already managing the bridge, skip.
+  if systemctl --user is-active --quiet opendoge-joystick 2>/dev/null \
+     || systemctl is-active --quiet opendoge-joystick 2>/dev/null; then
+    echo "Joystick bridge already running via systemd (opendoge-joystick.service)"
+    return 0
+  fi
+
+  # Fallback: launch the bridge directly (backward compatibility).
   local args=(--output "${COMMAND_FILE}" --require-rb)
   if [[ -n "${JOYSTICK_DEVICE}" ]]; then
     args+=(--device "${JOYSTICK_DEVICE}")
