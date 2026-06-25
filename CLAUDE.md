@@ -4,33 +4,32 @@
 
 ```
 OpenDoge_firmware/
-├── src/opendoge_deploy/     ← C++ 实机部署运行时 (生产代码)
+├── hardware/                 ← 硬件 I/O 层
+│   ├── motor/                ← EL05 CAN 协议 + 全部电机调测工具
+│   ├── imu/                  ← DM-IMU-L1 串口桥接
+│   └── gamepad/              ← Xbox 手柄桥接
+│
+├── daemons/                  ← systemd 后台持久化服务单元
+│
+├── deploy/                   ← C++ 实机部署运行时 (生产代码)
 │   ├── main.cpp              ← 主循环编排
 │   ├── cli.cpp/hpp           ← CLI 参数解析
 │   ├── controller.cpp/hpp    ← 状态机 + PD 控制回路
 │   ├── safety.cpp/hpp        ← 安全监控 (力矩/跟踪/倒地/温度)
 │   ├── observer.cpp/hpp      ← 观测构建 + 步态相位
 │   ├── status.cpp/hpp        ← JSON 状态输出
-│   ├── el05_socketcan.cpp/hpp ← EL05 CAN 协议层
 │   ├── policy.cpp/hpp        ← 策略抽象层
 │   ├── onnx_policy.cpp       ← ONNX Runtime backend
 │   └── runtime_io.cpp/hpp    ← 文件 I/O
 │
-├── daemons/                  ← 运行时 I/O 适配守护进程 (部署必须)
-│   ├── imu_bridge/           ← DM-IMU-L1 → /tmp/imu.state
-│   └── command_bridge/       ← Xbox 手柄 → /tmp/command.state
-│
-├── bringup/                  ← 硬件 bringup/标定/验证 (部署前使用)
-│   ├── el05/                 ← 电机交互菜单、标定、协议自检
-│   └── usb2can/              ← vendor 参考示例
-│
-├── web_tools/                ← Web 控制台 (独立工具)
-├── test/                     ← sim2sim 部署管线验证仿真
+├── sim2sim/                  ← sim2sim 部署管线验证仿真
 │   ├── deploy_mujoco.py      ← 复现 C++ 控制回路 (必须与 main.cpp 同步)
 │   ├── calc_zero_offset.py   ← URDF 零位 → 趴伏补偿角
 │   └── CLAUDE.md             ← 训练↔部署 Gap 追踪记录
 │
-├── scripts/                  ← Shell 编排 (CAN 启动、整机启动、systemd)
+├── test/                     ← 其他测试 (回归测试等)
+├── web_tools/                ← Web 控制台 (独立工具)
+├── scripts/                  ← Shell 编排 (CAN 启动、整机启动)
 ├── docs/URDF/                ← 机器人描述 (URDF + MuJoCo XML)
 └── policy/                   ← ONNX 策略模型
 ```
@@ -50,7 +49,7 @@ OpenDoge_firmware/
 | 出厂默认 CAN ID | **127** (0x7F) — 接入前必须改为 1-12 |
 | 上位机软件 | EDULITE-TOOL (Windows, 用于改 ID/升级固件) |
 
-> ⚠️ `bringup/usb2can/mi_motor_demo_TB.py` 是**小米电机**的供应商参考脚本，**不是 EL05 协议**。
+> ⚠️ `docs/usb2can/mi_motor_demo_TB.py` 是**小米电机**的供应商参考脚本，**不是 EL05 协议**。
 > 它仅作为 `python-can` + SocketCAN 的链路参考保留。EL05 协议实现见下方。
 
 ### 2. EL05 协议一致性
@@ -59,9 +58,9 @@ EL05/RobStride CAN 协议在以下三处实现，参数必须一致：
 
 | 位置 | 语言 | 用途 |
 |------|------|------|
-| `src/opendoge_deploy/src/el05_socketcan.cpp` | C++ | 生产部署 |
-| `bringup/el05/el05_motor_menu.py` | Python | 硬件调测 |
-| `bringup/el05/protocol_selftest.py` | Python | 协议自检 |
+| `hardware/motor/el05_socketcan.cpp` | C++ | 生产部署 |
+| `hardware/motor/el05_motor_menu.py` | Python | 硬件调测 |
+| `hardware/motor/protocol_selftest.py` | Python | 协议自检 |
 
 同步项：CAN ID 构造 (`buildExtId`)、float↔uint 映射范围 (P_MIN=-12.57, P_MAX=12.57, V_MIN=-50, V_MAX=50, T_MIN=-6, T_MAX=6, KP_MAX=500, KD_MAX=5)、comm_type 常量 (0x00-0x19)、参数索引 (0x7005, 0x7019, 0x701B, 0x3022)。
 
@@ -112,7 +111,7 @@ sudo ./scripts/setup_can.sh can0 1000000
 
 只读扫描全部电机 (不使能、不写参数)：
 ```bash
-python3 bringup/scan_motors_readonly.py
+python3 hardware/motor/scan_motors_readonly.py
 ```
 
 > ⚠️ 新电机出厂 ID 为 **127** (0x7F)，不是 1-12。需要用 Windows 上位机 EDULITE-TOOL
@@ -121,7 +120,7 @@ python3 bringup/scan_motors_readonly.py
 
 ### 4. 控制回路同步 (C++ ↔ Python)
 
-`src/opendoge_deploy/src/main.cpp` 和 `test/deploy_mujoco.py` 实现相同的控制回路。任何修改必须双向同步：
+`deploy/src/main.cpp` 和 `sim2sim/deploy_mujoco.py` 实现相同的控制回路。任何修改必须双向同步：
 
 - 状态机转换规则 (`RuntimeState` enum, `updateStateMachine` / `DeployController.step`)
 - 观测构建 (`buildObservation` / `build_observation`) — 49 维格式不可变
@@ -219,7 +218,7 @@ bash scripts/install_services.sh
 | 硬件 | DM-Tech DM-IMU-L1 |
 | USB ID | `6877:4d55` |
 | 串口 | `/dev/ttyUSBx` (自动检测, 服务启动时根据 USB ID 查找) |
-| 桥接脚本 | `daemons/imu_bridge/dm_imu_bridge.py` |
+| 桥接脚本 | `hardware/imu/dm_imu_bridge.py` |
 | systemd 服务 | `opendoge-imu.service` (用户服务, Restart=always) |
 | 输出文件 | `/tmp/opendoge_imu.state` |
 | 数据格式 | `wx wy wz gx gy gz` (角速度 rad/s, projected gravity 已取反) |
@@ -241,7 +240,7 @@ lsusb | grep 6877:4d55                              # 确认 IMU 已连接
 | USB ID | `413d:2104` |
 | 驱动 | xboxdrv (用户态, 需剥离内核 hid-generic) |
 | 设备节点 | `/dev/input/js0` → `Xbox Gamepad (userspace driver)` |
-| 桥接脚本 | `daemons/command_bridge/xbox_command_bridge.py` |
+| 桥接脚本 | `hardware/gamepad/xbox_command_bridge.py` |
 | 输出文件 | `/tmp/opendoge_command.state` |
 | 当前状态 | ✅ 正常运行 |
 
@@ -324,16 +323,42 @@ sudo ./scripts/setup_vcan.sh can0 can1 can2 can3
 ./install/opendoge_deploy/bin/opendoge_deploy --real --enable --allow-missing-imu --policy-backend none --duration-sec 1
 ```
 
+## Bringup 进度
+
+> 记录实机 bringup 关键里程碑。每次验证通过后更新日期和状态。
+
+| 日期 | 里程碑 | 状态 |
+|------|--------|------|
+| 2026-06-26 | CAN 接口: 4× CANable (gs_usb), can0-3 全部 UP @ 1 Mbps, LOWER_UP ✅ | ✅ |
+| 2026-06-26 | 电机 ID 验证: 12/12 EL05 全部在线, ID 1-12 正确, 通道分配正确, 运控模式, 无故障 | ✅ |
+| - | 电机零位标定: 在站立姿态下执行 COMM_SET_ZERO (尚未完成) | ⬜ |
+| - | IMU 数据流验证: `/tmp/opendoge_imu.state` 正常输出 | ⬜ |
+| - | Xbox 手柄数据流验证: `/tmp/opendoge_command.state` 正常输出 | ⬜ |
+| - | C++ deploy 空策略 dry-run: `--policy-backend none --real` 无 CAN 错误 | ⬜ |
+| - | C++ deploy PD 站立: 位置控制模式, 12 电机稳定站立 | ⬜ |
+| - | C++ deploy RL 行走: ONNX 推理闭环, 稳定行走 | ⬜ |
+
+### 上次扫描结果 (2026-06-26)
+
+```
+can0 (FL): ID=1(hip +4.49) 2(thigh +3.33) 3(calf +1.14) — 全部运控/无故障
+can1 (FR): ID=4(hip +1.18) 5(thigh +6.13) 6(calf +6.26) — 全部运控/无故障
+can2 (RL): ID=7(hip +3.11) 8(thigh +3.10) 9(calf +2.64) — 全部运控/无故障
+can3 (RR): ID=10(hip +0.02) 11(thigh +3.28) 12(calf +5.56) — 全部运控/无故障
+```
+
+> 当前位置不是默认站立角，电机零位尚未标定。下一步需要将机器人摆至站立姿态后执行机械置零。
+
 ## 修改指南
 
 1. **新增配置参数**: `types.hpp` → `runtime_io.cpp` → `main.cpp`
 2. **修改控制回路**: `controller.cpp` + `deploy_mujoco.py` 同步
-3. **修改 CAN 协议**: `el05_socketcan.cpp` + `bringup/el05/el05_motor_menu.py` + `protocol_selftest.py` 同步
+3. **修改 CAN 协议**: `el05_socketcan.cpp` + `hardware/motor/el05_motor_menu.py` + `protocol_selftest.py` 同步
 4. **新增 policy backend**: 实现 `Policy` 接口，在 `makePolicy()` 注册
-5. **XML 物理参数对齐**: 固件 `Opendoge.xml` 的物理参数必须对齐 UniLab 训练 `opendoge.xml`+`scene_flat.xml`，追踪记录见 `test/CLAUDE.md`
+5. **XML 物理参数对齐**: 固件 `Opendoge.xml` 的物理参数必须对齐 UniLab 训练 `opendoge.xml`+`scene_flat.xml`，追踪记录见 `sim2sim/CLAUDE.md`
 
 ## 相关仓库
 
 - UniLab 训练框架: `../UniLab/`
 - OpenDoge 硬件设计: `../OpenDoge_hardware/`
-- 模块详细文档: `src/opendoge_deploy/CLAUDE.md`
+- 模块详细文档: `deploy/CLAUDE.md`

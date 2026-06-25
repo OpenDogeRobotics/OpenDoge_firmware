@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SCRIPTS_DIR="${ROOT_DIR}/scripts"
+SERVICES_DIR="${ROOT_DIR}/daemons"
 
 SYSTEMD_USER_DIR="${HOME}/.config/systemd/user"
 SYSTEMD_SYSTEM_DIR="/etc/systemd/system"
@@ -21,7 +21,7 @@ echo ""
 echo "[1/5] Installing CAN interface setup (system oneshot) ..."
 
 if command -v sudo &>/dev/null; then
-    sudo cp "${SCRIPTS_DIR}/${CAN_SERVICE}" "${SYSTEMD_SYSTEM_DIR}/${CAN_SERVICE}"
+    sudo cp "${SERVICES_DIR}/${CAN_SERVICE}" "${SYSTEMD_SYSTEM_DIR}/${CAN_SERVICE}"
     sudo systemctl daemon-reload
     sudo systemctl enable "${CAN_SERVICE}"
     echo "      Installed → ${SYSTEMD_SYSTEM_DIR}/${CAN_SERVICE}"
@@ -43,7 +43,7 @@ if ! command -v xboxdrv &>/dev/null; then
     echo "      Install with: sudo apt install xboxdrv"
 fi
 
-sudo cp "${SCRIPTS_DIR}/${XBOXDRV_SERVICE}" "${SYSTEMD_SYSTEM_DIR}/${XBOXDRV_SERVICE}"
+sudo cp "${SERVICES_DIR}/${XBOXDRV_SERVICE}" "${SYSTEMD_SYSTEM_DIR}/${XBOXDRV_SERVICE}"
 sudo systemctl daemon-reload
 sudo systemctl enable "${XBOXDRV_SERVICE}"
 echo "      Installed → ${SYSTEMD_SYSTEM_DIR}/${XBOXDRV_SERVICE}"
@@ -74,7 +74,7 @@ fi
 echo ""
 echo "[4/5] Installing DM-IMU-L1 bridge (user service) ..."
 mkdir -p "${SYSTEMD_USER_DIR}"
-cp "${SCRIPTS_DIR}/${IMU_SERVICE}" "${SYSTEMD_USER_DIR}/${IMU_SERVICE}"
+cp "${SERVICES_DIR}/${IMU_SERVICE}" "${SYSTEMD_USER_DIR}/${IMU_SERVICE}"
 systemctl --user daemon-reload
 systemctl --user enable "${IMU_SERVICE}"
 echo "      Installed → ${SYSTEMD_USER_DIR}/${IMU_SERVICE}"
@@ -86,7 +86,7 @@ systemctl --user restart "${IMU_SERVICE}" || echo "      [WARN] IMU bridge faile
 # ═══════════════════════════════════════════════════════════════════
 echo ""
 echo "[5/5] Installing joystick bridge (user service) ..."
-cp "${SCRIPTS_DIR}/${JOYSTICK_SERVICE}" "${SYSTEMD_USER_DIR}/${JOYSTICK_SERVICE}"
+cp "${SERVICES_DIR}/${JOYSTICK_SERVICE}" "${SYSTEMD_USER_DIR}/${JOYSTICK_SERVICE}"
 systemctl --user daemon-reload
 systemctl --user enable "${JOYSTICK_SERVICE}"
 systemctl --user restart "${JOYSTICK_SERVICE}" || echo "      [WARN] joystick bridge failed to start (no js0?)"

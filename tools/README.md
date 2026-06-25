@@ -1,22 +1,19 @@
-# OpenDoge Hardware Tools
+# OpenDoge Tools
 
-This directory contains hardware bringup and validation tools for the real OpenDoge robot.
+> ⚠️ This directory is a placeholder. All tools have been reorganized into the new directory structure.
 
-## Layout
+## Where to find things
 
-- `el05/`: OpenDoge-specific EL05 / RobStride motor tools over the production USB2CAN signal forwarding board.
-- `imu/`: DM-IMU-L1 to `imu.state` bridge for non-ROS deployment.
-- `joystick/`: Xbox-compatible joystick to `command.state` bridge for non-ROS deployment.
-- `usb2can/`: vendor/reference USB2CAN examples and notes.
-
-## Current Rule
-
-OpenDoge uses EL05 RobStride/RS motors. Do not add LK/Lingkong motor paths to this project unless the hardware changes.
-
-The production motor path is:
-
-```text
-opendoge_deploy -> SocketCAN(can0/can1/can2/can3) -> USB2CAN signal forwarding board -> EL05 CAN bus
-```
-
-Use tools in `el05/` for OpenDoge bringup. Keep `usb2can/mi_motor_demo_TB.py` as the protocol reference sample.
+| What | Where |
+|------|-------|
+| EL05 CAN protocol (C++) | `hardware/motor/` |
+| EL05 motor menu, calibrate, protocol selftest | `hardware/motor/` |
+| Scan motors (read-only) | `hardware/motor/scan_motors_readonly.py` |
+| DM-IMU-L1 bridge | `hardware/imu/` |
+| Xbox gamepad bridge | `hardware/gamepad/` |
+| USB2CAN reference | `docs/usb2can/` |
+| Deploy runtime (C++) | `deploy/` |
+| sim2sim verification | `sim2sim/` |
+| Web console | `web_tools/` |
+| systemd service units | `daemons/` |
+| Shell scripts | `scripts/` |

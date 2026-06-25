@@ -9,7 +9,7 @@ CAN_BITRATE="${CAN_BITRATE:-1000000}"
 COMMAND_FILE="${COMMAND_FILE:-/tmp/opendoge_command.state}"
 IMU_FILE="${IMU_FILE:-/tmp/opendoge_imu.state}"
 STATUS_FILE="${STATUS_FILE:-/tmp/opendoge_status.json}"
-CONFIG_FILE="${CONFIG_FILE:-${ROOT_DIR}/src/opendoge_deploy/configs/opendoge_deploy.conf}"
+CONFIG_FILE="${CONFIG_FILE:-${ROOT_DIR}/deploy/configs/opendoge_deploy.conf}"
 DEPLOY_BIN="${DEPLOY_BIN:-${ROOT_DIR}/install/opendoge_deploy/bin/opendoge_deploy}"
 POLICY_BACKEND="${POLICY_BACKEND:-onnx}"
 POLICY_PATH="${POLICY_PATH:-}"
@@ -211,7 +211,7 @@ case "${MODE}" in
     verify_can
     echo ""
     echo "Running motor calibration on ${CALIB_CHANNEL}..."
-    "${ROOT_DIR}/bringup/el05/el05_calibrate.py" \
+    "${ROOT_DIR}/hardware/motor/el05_calibrate.py" \
       --channel "${CALIB_CHANNEL}" \
       --config "${CONFIG_FILE}" \
       | tee "${CALIB_OUTPUT}"
