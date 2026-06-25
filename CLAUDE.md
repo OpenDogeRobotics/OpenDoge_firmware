@@ -62,7 +62,17 @@ EL05/RobStride CAN 协议在以下三处实现，参数必须一致：
 | `hardware/motor/el05_motor_menu.py` | Python | 硬件调测 |
 | `hardware/motor/protocol_selftest.py` | Python | 协议自检 |
 
-同步项：CAN ID 构造 (`buildExtId`)、float↔uint 映射范围 (P_MIN=-12.57, P_MAX=12.57, V_MIN=-50, V_MAX=50, T_MIN=-6, T_MAX=6, KP_MAX=500, KD_MAX=5)、comm_type 常量 (0x00-0x19)、参数索引 (0x7005, 0x7019, 0x701B, 0x3022)。
+同步项：CAN ID 构造 (`buildExtId`)、float↔uint 映射范围 (P_MIN=-12.57, P_MAX=12.57, V_MIN=-50, V_MAX=50, T_MIN=-6, T_MAX=6, KP_MAX=500, KD_MAX=5)、comm_type 常量 (0x00-0x19)、参数索引。
+
+参数索引：
+
+| 索引 | 名称 | 类型 | 说明 |
+|------|------|------|------|
+| 0x7005 | run_mode | uint32 | 运行模式 (0=运控, 1=位置, 2=速度, 3=电流) |
+| 0x7019 | mechPos | float | 机械位置 (rad) |
+| 0x701B | mechVel | float | 机械速度 (rad/s) |
+| 0x7029 | zero_sta | **uint8** | **零点标志位: 0=0~2π, 1=-π~π (必须设为1!)** |
+| 0x3022 | faultSta | uint32 | 故障状态寄存器 |
 
 完整 comm_type 列表：
 
@@ -73,10 +83,12 @@ EL05/RobStride CAN 协议在以下三处实现，参数必须一致：
 | COMM_STATUS | 0x02 | 电机反馈数据 | ✅ |
 | COMM_ENABLE | 0x03 | 电机使能运行 | ✅ |
 | COMM_STOP | 0x04 | 电机停止运行 | ✅ |
-| COMM_SET_ZERO | 0x06 | 设置机械零位 | ✅ |
+| COMM_SET_ZERO | 0x06 | 设置机械零位 (需运控模式, 不先stop) | ✅ |
+| COMM_SET_CAN_ID | 0x07 | 设置电机 CAN ID | ✅ |
 | COMM_READ_PARAM | 0x11 | 单个参数读取 | ✅ |
 | COMM_WRITE_PARAM | 0x12 | 单个参数写入 | ✅ |
 | COMM_FAULT_FEEDBACK | 0x15 | 故障反馈帧 | - |
+| COMM_SAVE_PARAM | 0x16 | **保存参数到 Flash (标零/改参后必须调用)** | ✅ |
 
 ### 3. CAN 硬件 (USB-CAN 适配器)
 
