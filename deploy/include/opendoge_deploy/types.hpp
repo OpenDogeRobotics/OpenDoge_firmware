@@ -77,6 +77,7 @@ struct JointCalibration
 {
   double direction{1.0};
   double offset{0.0};
+  double reduction{1.0};  // motor-to-joint gear ratio (>1: motor spins faster)
   double lower{-12.57};
   double upper{12.57};
   double max_position_step{0.015};
@@ -174,17 +175,17 @@ inline std::array<JointCalibration, kNumJoints> defaultJointCalibration()
 
 inline double logicalPosition(double motor_position, const JointCalibration & calibration)
 {
-  return calibration.direction * (motor_position - calibration.offset);
+  return calibration.direction * (motor_position / calibration.reduction - calibration.offset);
 }
 
 inline double logicalVelocity(double motor_velocity, const JointCalibration & calibration)
 {
-  return calibration.direction * motor_velocity;
+  return calibration.direction * motor_velocity / calibration.reduction;
 }
 
 inline double motorPosition(double logical_position, const JointCalibration & calibration)
 {
-  return calibration.offset + calibration.direction * logical_position;
+  return (calibration.offset + calibration.direction * logical_position) * calibration.reduction;
 }
 
 }  // namespace opendoge

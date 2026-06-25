@@ -117,9 +117,11 @@ bool safetyFault(
     }
 
     // ── sustained torque monitoring ──
+    // Convert motor-side torque to joint-side via reduction ratio
     const double max_torque_val = calibration[i].max_torque > 0.0
       ? calibration[i].max_torque : config.torque_threshold;
-    const double abs_torque = std::abs(states[i].torque);
+    const double joint_torque = states[i].torque * calibration[i].reduction;
+    const double abs_torque = std::abs(joint_torque);
     if (abs_torque > max_torque_val) {
       if (safety_state[i].torque_exceeded_since_s == 0.0) {
         safety_state[i].torque_exceeded_since_s = now_s;

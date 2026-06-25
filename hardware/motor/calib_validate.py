@@ -49,6 +49,14 @@ MUJOCO_PRONE = np.array([
     -0.2610, 1.1358, -2.6275,   # RR
 ])
 
+# Motor-to-joint reduction ratios (calf joints have 1.5:1 gear reduction)
+REDUCTIONS = np.array([
+    1.0, 1.0, 1.5,   # FL: hip, thigh, calf
+    1.0, 1.0, 1.5,   # FR: hip, thigh, calf
+    1.0, 1.0, 1.5,   # RL: hip, thigh, calf
+    1.0, 1.0, 1.5,   # RR: hip, thigh, calf
+])
+
 LOG_DIR = Path(__file__).resolve().parent / "calibration_logs"
 POLICY_PATH = Path(__file__).resolve().parent.parent.parent / "policy" / "opendoge_r5.onnx"
 
@@ -69,8 +77,8 @@ def build_observation(
     if commands is None:
         commands = np.zeros(3)
 
-    # logical position from motor mechPos
-    logical_pos = directions * (motor_positions - offsets)
+    # logical position from motor mechPos (with reduction ratio)
+    logical_pos = directions * (motor_positions / REDUCTIONS - offsets)
     dof_pos_diff = logical_pos - DEFAULT_POS
     dof_vel = np.zeros(NUM_JOINTS)  # assume stationary
     last_action = np.zeros(NUM_JOINTS)
@@ -105,12 +113,12 @@ def load_captures() -> Optional[list]:
 
 
 def compute_offsets(captures: list, directions: np.ndarray) -> np.ndarray:
-    """offset = mechpos_at_standing - direction * default_pos"""
+    """offset = mechpos_at_standing / reduction - direction * default_pos"""
     offsets = np.zeros(NUM_JOINTS)
     for i in range(NUM_JOINTS):
         cap = captures[i]
         if cap is not None:
-            offsets[i] = cap - directions[i] * DEFAULT_POS[i]
+            offsets[i] = cap / REDUCTIONS[i] - directions[i] * DEFAULT_POS[i]
         else:
             # Fallback: MuJoCo prone method
             offsets[i] = -MUJOCO_PRONE[i]

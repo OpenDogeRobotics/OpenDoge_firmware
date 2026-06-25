@@ -154,6 +154,7 @@ bool loadDeployConfig(
       auto & joint = config.joints[i];
       joint.direction = getDouble(values, prefix + "direction", joint.direction);
       joint.offset = getDouble(values, prefix + "offset", joint.offset);
+      joint.reduction = getDouble(values, prefix + "reduction", joint.reduction);
       joint.lower = getDouble(values, prefix + "lower", joint.lower);
       joint.upper = getDouble(values, prefix + "upper", joint.upper);
       joint.max_position_step = getDouble(values, prefix + "max_position_step", joint.max_position_step);

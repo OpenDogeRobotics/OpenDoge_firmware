@@ -53,6 +53,14 @@ JOINTS = [
     ("RR_calf_joint",  "can3", 12, -1.3),
 ]
 
+# Motor-to-joint reduction ratios (calf joints have 1.5:1 gear reduction)
+REDUCTION = [
+    1.0, 1.0, 1.5,   # FL: hip, thigh, calf
+    1.0, 1.0, 1.5,   # FR: hip, thigh, calf
+    1.0, 1.0, 1.5,   # RL: hip, thigh, calf
+    1.0, 1.0, 1.5,   # RR: hip, thigh, calf
+]
+
 # MuJoCo 仿真趴伏角 (fallback)
 MUJOCO_PRONE = {
     "FL_hip_joint": 0.0600, "FL_thigh_joint": 0.7615, "FL_calf_joint": -2.2623,
@@ -62,15 +70,15 @@ MUJOCO_PRONE = {
 }
 
 
-def compute_offset(mechpos_at_standing: float, default_pos: float) -> tuple[int, float]:
+def compute_offset(mechpos_at_standing: float, default_pos: float, reduction: float = 1.0) -> tuple[int, float]:
     """
-    logicalPos = direction * (mechPos - offset)
-    At standing: direction * (mechpos_at_standing - offset) = default_pos
-    => offset = mechpos_at_standing - direction * default_pos
+    logicalPos = direction * (mechPos / reduction - offset)
+    At standing: direction * (mechpos_at_standing / reduction - offset) = default_pos
+    => offset = mechpos_at_standing / reduction - direction * default_pos
 
     Default direction = +1. Returns (direction, offset).
     """
-    return 1, mechpos_at_standing - default_pos
+    return 1, mechpos_at_standing / reduction - default_pos
 
 
 def read_all_fast(buses: dict[str, El05Bus]) -> list[Optional[float]]:
@@ -140,7 +148,7 @@ def save_log(captures: list[Optional[float]], positions: list[Optional[float]],
         cap_str = f"{cap:+.4f}" if cap is not None else "N/A"
 
         if cap is not None:
-            direction, offset = compute_offset(cap, dp)
+            direction, offset = compute_offset(cap, dp, REDUCTION[i])
             source = "实测锁定"
         else:
             prone = MUJOCO_PRONE.get(name, 0.0)
@@ -157,7 +165,7 @@ def save_log(captures: list[Optional[float]], positions: list[Optional[float]],
     for i, (name, _ch, _mid, dp) in enumerate(JOINTS):
         cap = captures[i]
         if cap is not None:
-            direction, offset = compute_offset(cap, dp)
+            direction, offset = compute_offset(cap, dp, REDUCTION[i])
         else:
             prone = MUJOCO_PRONE.get(name, 0.0)
             direction = 1
@@ -286,7 +294,7 @@ def main():
                         status = "接近"
 
                 if cap is not None:
-                    direction, offset = compute_offset(cap, dp)
+                    direction, offset = compute_offset(cap, dp, REDUCTION[i])
                     cap_str = f"{cap:+10.4f}"
                     status = f"🔒 dir={direction:+d} off={offset:+.4f}"
 
@@ -354,7 +362,7 @@ def main():
     for i, (name, _ch, _mid, dp) in enumerate(JOINTS):
         cap = captures[i]
         if cap is not None:
-            direction, offset = compute_offset(cap, dp)
+            direction, offset = compute_offset(cap, dp, REDUCTION[i])
             source = "实测锁定"
         else:
             prone = MUJOCO_PRONE.get(name, 0.0)

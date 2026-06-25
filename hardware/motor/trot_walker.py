@@ -105,6 +105,7 @@ class JointCalibration:
     name: str
     direction: float = 1.0       # 方向符号 (+1 或 -1)
     offset: float = 0.0          # 零位偏移 (rad)
+    reduction: float = 1.0       # 电机→关节减速比 (>1 表示电机转得更快)
     lower: float = -12.57        # 逻辑角下限 (rad)
     upper: float = 12.57         # 逻辑角上限 (rad)
     max_position_step: float = 0.015  # 每拍最大位置步长 (rad)
@@ -173,17 +174,17 @@ class MotorState:
 
 def logical_position(motor_pos: float, cal: JointCalibration) -> float:
     """电机编码器位置 → 逻辑关节角 (URDF)。"""
-    return cal.direction * (motor_pos - cal.offset)
+    return cal.direction * (motor_pos / cal.reduction - cal.offset)
 
 
 def motor_position(logical_pos: float, cal: JointCalibration) -> float:
     """逻辑关节角 (URDF) → 电机编码器位置。"""
-    return cal.offset + cal.direction * logical_pos
+    return (cal.offset + cal.direction * logical_pos) * cal.reduction
 
 
 def logical_velocity(motor_vel: float, cal: JointCalibration) -> float:
     """电机速度 → 逻辑关节速度。"""
-    return cal.direction * motor_vel
+    return cal.direction * motor_vel / cal.reduction
 
 
 def smoothstep(t: float) -> float:
@@ -240,6 +241,7 @@ def parse_opendoge_config(path: str) -> WalkerConfig:
             name=name,
             direction=_get(prefix + "direction", 1.0),
             offset=_get(prefix + "offset", 0.0),
+            reduction=_get(prefix + "reduction", 1.0),
             lower=_get(prefix + "lower", -12.57),
             upper=_get(prefix + "upper", 12.57),
             max_position_step=_get(prefix + "max_position_step", 0.015),

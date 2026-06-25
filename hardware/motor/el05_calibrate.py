@@ -24,16 +24,6 @@ OpenDoge 电机标定工具 — 计算 JointCalibration.offset 补偿值。
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
 
-  # Verify existing calibration
-  python3 hardware/motor/el05_calibrate.py --channel can0 --verify
-
-  # Dry-run (no CAN — validates logic)
-  python3 hardware/motor/el05_calibrate.py --dry-run
-
-Output is printed to stdout in key=value format ready to append to
-opendoge_deploy.conf.
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -62,26 +52,36 @@ REFERENCE_ANGLES = [
 DEFAULT_DIRECTION = 1.0  # default JointCalibration.direction
 CAN_TIMEOUT = 1.0        # seconds to wait for param read
 
+# Motor-to-joint reduction ratios (calf joints have 1.5:1 gear reduction)
+# Index order: FL_hip, FL_thigh, FL_calf, FR_hip, FR_thigh, FR_calf,
+#              RL_hip, RL_thigh, RL_calf, RR_hip, RR_thigh, RR_calf
+REDUCTION = [
+    1.0, 1.0, 1.5,   # FL
+    1.0, 1.0, 1.5,   # FR
+    1.0, 1.0, 1.5,   # RL
+    1.0, 1.0, 1.5,   # RR
+]
+
 
 def compute_offset(
-    mech_pos: float, ref_angle: float, direction: float
+    mech_pos: float, ref_angle: float, direction: float, reduction: float = 1.0,
 ) -> float:
     """Compute the JointCalibration.offset for one motor.
 
-    logicalPos = direction * (motor_pos - offset)
-    => offset = motor_pos - direction * ref_angle
+    logicalPos = direction * (motor_pos / reduction - offset)
+    => offset = motor_pos / reduction - direction * ref_angle
 
-    When direction == 1.0:  offset = mech_pos - ref_angle
-    When direction == -1.0: offset = mech_pos + ref_angle
+    When direction == 1.0:  offset = mech_pos / reduction - ref_angle
+    When direction == -1.0: offset = mech_pos / reduction + ref_angle
     """
-    return mech_pos - direction * ref_angle
+    return mech_pos / reduction - direction * ref_angle
 
 
 def compute_logical(
-    mech_pos: float, offset: float, direction: float
+    mech_pos: float, offset: float, direction: float, reduction: float = 1.0,
 ) -> float:
     """Apply calibration to get logical (URDF) position."""
-    return direction * (mech_pos - offset)
+    return direction * (mech_pos / reduction - offset)
 
 
 def print_header() -> None:
@@ -99,18 +99,20 @@ def interactive_calibrate(
     for idx, (name, motor_id) in enumerate(motors):
         ref = REFERENCE_ANGLES[idx]
         direction = DEFAULT_DIRECTION
+        reduction = REDUCTION[idx]
 
         print(f"\n{'='*60}")
         print(f"Joint {idx+1}/12: {name} (motor_id={motor_id})")
         print(f"  Reference angle: {ref:+.3f} rad")
         print(f"  Direction: {direction:+.0f}")
+        print(f"  Reduction: {reduction:.1f}")
         print()
         print(f"  ACTION: Manually position {name} to its URDF reference")
         print(f"         angle ({ref:+.3f} rad), then press Enter.")
 
         if dry_run:
             input("  [dry-run] Press Enter to simulate...")
-            print(f"  [dry-run] Simulated mechPos = ref = {ref:+.3f} rad")
+            print(f"  [dry-run] Simulated mechPos = ref * reduction = {ref * reduction:+.3f} rad")
             offsets[name] = 0.0
             continue
 
@@ -123,8 +125,8 @@ def interactive_calibrate(
             print(f"  Skipping. Check CAN connection and retry.")
             continue
 
-        offset = compute_offset(mech_pos, ref, direction)
-        logical = compute_logical(mech_pos, offset, direction)
+        offset = compute_offset(mech_pos, ref, direction, reduction)
+        logical = compute_logical(mech_pos, offset, direction, reduction)
         error = logical - ref
 
         print(f"  mechPos = {mech_pos:+.4f} rad")
@@ -166,14 +168,15 @@ def batch_calibrate(
     for idx, (name, motor_id) in enumerate(motors):
         ref = REFERENCE_ANGLES[idx]
         direction = DEFAULT_DIRECTION
+        reduction = REDUCTION[idx]
 
         mech_pos = bus.read_param_float(motor_id, IDX_MECH_POS, timeout=CAN_TIMEOUT)
         if mech_pos is None:
             print(f"  {name} (id={motor_id}): NO RESPONSE — skipped")
             continue
 
-        offset = compute_offset(mech_pos, ref, direction)
-        logical = compute_logical(mech_pos, offset, direction)
+        offset = compute_offset(mech_pos, ref, direction, reduction)
+        logical = compute_logical(mech_pos, offset, direction, reduction)
         error = logical - ref
         offsets[name] = offset
 
@@ -203,16 +206,17 @@ def verify_calibration(
         ref = REFERENCE_ANGLES[idx]
         offset = offsets_map.get(name, 0.0)
         direction = DEFAULT_DIRECTION
+        reduction = REDUCTION[idx]
 
         if dry_run:
-            mech_pos = ref + offset  # simulate perfect alignment
+            mech_pos = ref * reduction + offset  # simulate perfect alignment
         else:
             mech_pos = bus.read_param_float(motor_id, IDX_MECH_POS, timeout=CAN_TIMEOUT)
             if mech_pos is None:
                 print(f"  {name:20s}  NO RESPONSE")
                 continue
 
-        logical = compute_logical(mech_pos, offset, direction)
+        logical = compute_logical(mech_pos, offset, direction, reduction)
         error = logical - ref
         max_error = max(max_error, abs(error))
 
