@@ -20,7 +20,8 @@ class OnnxPolicy final : public Policy
 {
 public:
   OnnxPolicy()
-  : env_(ORT_LOGGING_LEVEL_WARNING, "opendoge_deploy")
+  : env_(ORT_LOGGING_LEVEL_WARNING, "opendoge_deploy"),
+    memory_info_(Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault))
   {
     session_options_.SetIntraOpNumThreads(1);
     session_options_.SetInterOpNumThreads(1);
@@ -58,9 +59,8 @@ public:
       input[i] = static_cast<float>(obs[i]);
     }
     std::array<int64_t, 2> input_shape{1, static_cast<int64_t>(kObsDim)};
-    auto memory = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
     auto tensor = Ort::Value::CreateTensor<float>(
-      memory, input.data(), input.size(), input_shape.data(), input_shape.size());
+      memory_info_, input.data(), input.size(), input_shape.data(), input_shape.size());
 
     const char * input_names[] = {input_name_.c_str()};
     const char * output_names[] = {output_name_.c_str()};
@@ -87,6 +87,7 @@ private:
   Ort::Env env_;
   Ort::SessionOptions session_options_;
   Ort::AllocatorWithDefaultOptions allocator_;
+  Ort::MemoryInfo memory_info_;
   std::unique_ptr<Ort::Session> session_;
   std::string input_name_;
   std::string output_name_;

@@ -88,6 +88,7 @@ struct Options
   bool allow_missing_imu{false};
   bool realtime{false};
   int cpu{-1};
+  int rt_priority{60};
   double duration_s{0.0};
   std::string status_file;
   opendoge::OperatorCommand static_command;
@@ -110,6 +111,7 @@ void printUsage()
     << "  --start-active                          enter active after readiness checks\n"
     << "  --allow-missing-imu                     permit active with default IMU sample\n"
     << "  --realtime                              try mlockall + SCHED_FIFO\n"
+    << "  --rt-priority N                         SCHED_FIFO priority (default 60)\n"
     << "  --cpu N                                 pin process to CPU N\n"
     << "  --duration-sec SEC                      stop after SEC, 0 means until Ctrl+C\n";
 }
@@ -155,6 +157,8 @@ bool parseArgs(int argc, char ** argv, Options & opt)
         opt.allow_missing_imu = true;
       } else if (arg == "--realtime") {
         opt.realtime = true;
+      } else if (arg == "--rt-priority") {
+        opt.rt_priority = std::stoi(need_value(arg));
       } else if (arg == "--cpu") {
         opt.cpu = std::stoi(need_value(arg));
       } else if (arg == "--status-file") {
@@ -181,6 +185,30 @@ std::string hexValue(std::uint64_t value, int width = 0)
   }
   ss << value;
   return ss.str();
+}
+
+std::string escapeJson(const std::string & input)
+{
+  std::string out;
+  out.reserve(input.size() + 4);
+  for (char c : input) {
+    switch (c) {
+      case '"':  out += "\\\""; break;
+      case '\\': out += "\\\\"; break;
+      case '\n': out += "\\n"; break;
+      case '\r': out += "\\r"; break;
+      case '\t': out += "\\t"; break;
+      default:
+        if (static_cast<unsigned char>(c) < 0x20) {
+          out += "\\u00";
+          out += "0123456789abcdef"[static_cast<unsigned char>(c) >> 4];
+          out += "0123456789abcdef"[static_cast<unsigned char>(c) & 0x0F];
+        } else {
+          out += c;
+        }
+    }
+  }
+  return out;
 }
 
 std::string describeBits(std::uint32_t value)
@@ -218,7 +246,7 @@ void applyRuntimeTuning(const Options & opt)
       std::cerr << "Warning: mlockall failed\n";
     }
     sched_param param{};
-    param.sched_priority = 60;
+    param.sched_priority = opt.rt_priority;
     if (::sched_setscheduler(0, SCHED_FIFO, &param) != 0) {
       std::cerr << "Warning: sched_setscheduler(SCHED_FIFO) failed\n";
     }
@@ -228,6 +256,8 @@ void applyRuntimeTuning(const Options & opt)
 /// Compute adaptive gait phase matching UniLab training.
 /// cmd_speed = norm([vx, vy, vyaw]); freq ∈ [1.2, 2.5] Hz; phase wraps at 1.0.
 /// dt is the time step between phase advances (1.0 / inference_hz).
+/// Note: vx/vy (m/s) and vyaw (rad/s) are mixed in the norm — this is
+/// intentional and matches the training-side implementation exactly.
 inline double advancePhase(
   const opendoge::OperatorCommand & command, double phase, double dt)
 {
@@ -354,16 +384,15 @@ bool safetyFault(
       return true;
     }
     // Early temperature warning (once per joint per threshold crossing)
-    static constexpr double kWarnTempC = 65.0;
     static std::array<bool, opendoge::kNumJoints> temp_warned{};
-    if (states[i].temperature >= kWarnTempC &&
+    if (states[i].temperature >= safety.temp_warn_c &&
         states[i].temperature < safety.over_temperature_c &&
         !temp_warned[i]) {
       std::cerr << "Warning: " << joints[i].name << " temperature "
                 << states[i].temperature << " C (limit " << safety.over_temperature_c << ")\n";
       temp_warned[i] = true;
     }
-    if (states[i].temperature < kWarnTempC - 5.0) {
+    if (states[i].temperature < safety.temp_warn_c - 5.0) {
       temp_warned[i] = false;  // reset when temperature drops
     }
 
@@ -407,8 +436,10 @@ bool safetyFault(
   }
 
   // ── IMU-based fall detection ──
+  static double fall_since_s = 0.0;
+  static double fall_imu_invalid_since_s = 0.0;
   if (imu.valid) {
-    static double fall_since_s = 0.0;
+    fall_imu_invalid_since_s = 0.0;
     if (imu.projected_gravity[2] < safety.fall_gravity_z_threshold) {
       if (fall_since_s == 0.0) {
         fall_since_s = now_s;
@@ -418,6 +449,14 @@ bool safetyFault(
         return true;
       }
     } else {
+      fall_since_s = 0.0;
+    }
+  } else {
+    // IMU invalid: track duration; reset fall timer after a gap to avoid
+    // stale fall_since_s from before the invalid window
+    if (fall_imu_invalid_since_s == 0.0) {
+      fall_imu_invalid_since_s = now_s;
+    } else if (now_s - fall_imu_invalid_since_s > 0.5) {
       fall_since_s = 0.0;
     }
   }
@@ -434,11 +473,13 @@ void sendDampingBurst(
   opendoge::El05SocketCan & can,
   const std::array<opendoge::JointMap, opendoge::kNumJoints> & joints,
   const std::array<opendoge::MotorState, opendoge::kNumJoints> & states,
+  const std::array<opendoge::JointCalibration, opendoge::kNumJoints> & calibration,
   double safe_kd)
 {
   for (int repeat = 0; repeat < 20; ++repeat) {
     for (std::size_t i = 0; i < opendoge::kNumJoints; ++i) {
-      opendoge::MotorCommand damp{states[i].position, 0.0, 0.0, 0.0, safe_kd};
+      const double clamped_kd = std::min(safe_kd, calibration[i].max_kd);
+      opendoge::MotorCommand damp{states[i].position, 0.0, 0.0, 0.0, clamped_kd};
       can.sendMotion(joints[i], damp);
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -545,14 +586,14 @@ int main(int argc, char ** argv)
         if (opt.clear_fault) {
           if (!can.sendStop(joint, true)) {
             std::cerr << "Clear fault failed: " << can.lastError() << "\n";
-            sendDampingBurst(can, joints, states, config.safe_kd);
+            sendDampingBurst(can, joints, states, config.joints, config.safe_kd);
             can.close();
             return 1;
           }
         }
         if (!can.sendMotionMode(joint) || !can.sendEnable(joint)) {
           std::cerr << "Motor startup failed: " << can.lastError() << "\n";
-          sendDampingBurst(can, joints, states, config.safe_kd);
+          sendDampingBurst(can, joints, states, config.joints, config.safe_kd);
           can.close();
           return 1;
         }
@@ -585,6 +626,9 @@ int main(int argc, char ** argv)
   safety.command_timeout_s = config.command_timeout_s;
   safety.fall_gravity_z_threshold = config.fall_gravity_z_threshold;
   safety.fall_timeout_s = config.fall_timeout_s;
+  safety.feedback_wait_timeout_s = config.feedback_wait_timeout_s;
+  safety.temp_warn_c = config.temp_warn_c;
+  safety.imu_debounce_count = config.imu_debounce_count;
   opendoge::OperatorCommand command = opt.static_command;
   opendoge::ImuSample imu;
   imu.valid = opt.allow_missing_imu;
@@ -593,6 +637,8 @@ int main(int argc, char ** argv)
   LoopStats loop_stats;
   double pc_startup_start_s{0.0};
   bool rl_fallback_active{false};
+  double feedback_wait_start_s{0.0};
+  int imu_invalid_count{0};
   std::array<JointSafetyState, opendoge::kNumJoints> safety_state{};
   std::uint64_t last_can_sent = 0;
   std::uint64_t last_can_received = 0;
@@ -671,7 +717,13 @@ int main(int argc, char ** argv)
         fault_reason = error;
         runtime_state = RuntimeState::DampingFault;
       }
+      // Debounce IMU validity to avoid transient drops (e.g. file write race)
       if (!opt.allow_missing_imu && !imu.valid) {
+        ++imu_invalid_count;
+      } else {
+        imu_invalid_count = 0;
+      }
+      if (!opt.allow_missing_imu && imu_invalid_count > safety.imu_debounce_count) {
         runtime_state = RuntimeState::Ready;
       }
       next_input_s = t + 0.005;
@@ -717,8 +769,18 @@ int main(int argc, char ** argv)
         command.position_control = false;
       }
 
-      if (runtime_state == RuntimeState::WaitFeedback && allFeedbackReceived(states)) {
-        runtime_state = RuntimeState::Ready;
+      if (runtime_state == RuntimeState::WaitFeedback) {
+        if (allFeedbackReceived(states)) {
+          runtime_state = RuntimeState::Ready;
+          feedback_wait_start_s = 0.0;
+        } else if (safety.feedback_wait_timeout_s > 0.0) {
+          if (feedback_wait_start_s == 0.0) {
+            feedback_wait_start_s = t;
+          } else if (t - feedback_wait_start_s > safety.feedback_wait_timeout_s) {
+            fault_reason = "feedback wait timeout after " + std::to_string(t - feedback_wait_start_s) + "s";
+            runtime_state = RuntimeState::DampingFault;
+          }
+        }
       }
 
       // Ready ↔ LowGainTest ↔ Active transitions
@@ -771,6 +833,7 @@ int main(int argc, char ** argv)
       // ActivePC ↔ ActiveRL switching
       if (runtime_state == RuntimeState::ActivePC && command.rl_inference) {
         runtime_state = RuntimeState::ActiveRL;
+        rl_fallback_active = false;  // Clear stale fallback flag on fresh RL entry
       }
       if (runtime_state == RuntimeState::ActiveRL && !command.rl_inference && command.active) {
         runtime_state = RuntimeState::ActivePC;
@@ -832,11 +895,13 @@ int main(int argc, char ** argv)
                           || runtime_state == RuntimeState::ActiveRL;
       const bool is_ramping = runtime_state == RuntimeState::EnteringPosition;
       const bool low_gain = runtime_state == RuntimeState::LowGainTest;
+      // Skip CAN sends if link is already known-bad to avoid flooding the bus
+      const bool can_ready = !opt.dry_run && can.ok();
       for (std::size_t i = 0; i < opendoge::kNumJoints; ++i) {
         const auto & joint_cfg = config.joints[i];
         if (!is_active && !is_ramping && !low_gain) {
-          // 阻尼模式：kp=0, kd=safe_kd
-          commands[i] = {states[i].position, 0.0, 0.0, 0.0, config.safe_kd};
+          // 阻尼模式：kp=0, kd=safe_kd (clamped to per-joint max)
+          commands[i] = {states[i].position, 0.0, 0.0, 0.0, std::min(config.safe_kd, joint_cfg.max_kd)};
         } else if (is_ramping) {
           // 斜坡：kp/kd 从阻尼值平滑过渡到满 PD 值
           const double ramp_elapsed = t - pc_startup_start_s;
@@ -866,9 +931,12 @@ int main(int argc, char ** argv)
             std::min(effective_kp, joint_cfg.max_kp),
             std::min(effective_kd, joint_cfg.max_kd)};
         }
-        if (!opt.dry_run && !can.sendMotion(joints[i], commands[i])) {
-          fault_reason = can.lastError();
-          runtime_state = RuntimeState::DampingFault;
+        if (can_ready) {
+          if (!can.sendMotion(joints[i], commands[i])) {
+            fault_reason = can.lastError();
+            runtime_state = RuntimeState::DampingFault;
+            break;  // Stop sending on first failure — CAN link is down
+          }
         }
       }
       next_control_s = t + 1.0 / config.control_hz;
@@ -913,14 +981,9 @@ int main(int argc, char ** argv)
           sf << "\"rl_inference\":" << (command.rl_inference ? "true" : "false") << ",";
           sf << "\"low_gain\":" << (command.low_gain_mode ? "true" : "false") << ",";
           sf << "\"imu_valid\":" << (imu.valid ? "true" : "false") << ",";
-          sf << "\"fault_reason\":\"";
-          if (runtime_state == RuntimeState::DampingFault) {
-            for (char c : fault_reason) {
-              if (c == '"' || c == '\\') sf << '\\';
-              sf << c;
-            }
-          }
-          sf << "\",";
+          sf << "\"fault_reason\":\""
+             << (runtime_state == RuntimeState::DampingFault ? escapeJson(fault_reason) : "")
+             << "\",";
           sf << "\"ctrl_ticks\":" << loop_stats.control_ticks << ",";
           sf << "\"infer_ticks\":" << loop_stats.inference_ticks << ",";
           sf << "\"max_late_us\":" << static_cast<int>(loop_stats.max_control_late_s * 1.0e6) << ",";
@@ -971,7 +1034,7 @@ int main(int argc, char ** argv)
   }
 
   if (!opt.dry_run) {
-    sendDampingBurst(can, joints, states, config.safe_kd);
+    sendDampingBurst(can, joints, states, config.joints, config.safe_kd);
     can.close();
   }
 

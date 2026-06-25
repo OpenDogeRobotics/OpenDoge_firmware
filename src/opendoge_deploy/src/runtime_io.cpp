@@ -140,6 +140,14 @@ bool loadDeployConfig(
     config.fall_gravity_z_threshold = getDouble(values, "fall_gravity_z_threshold", config.fall_gravity_z_threshold);
     config.fall_timeout_s = getDouble(values, "fall_timeout_s", config.fall_timeout_s);
     config.command_smoothing_alpha = getDouble(values, "command_smoothing_alpha", config.command_smoothing_alpha);
+    config.feedback_wait_timeout_s = getDouble(values, "feedback_wait_timeout_s", config.feedback_wait_timeout_s);
+    config.temp_warn_c = getDouble(values, "temp_warn_c", config.temp_warn_c);
+    {
+      const auto it = values.find("imu_debounce_count");
+      if (it != values.end() && !it->second.empty()) {
+        config.imu_debounce_count = std::stoi(it->second);
+      }
+    }
 
     for (std::size_t i = 0; i < joints.size(); ++i) {
       const auto prefix = "joint." + joints[i].name + ".";

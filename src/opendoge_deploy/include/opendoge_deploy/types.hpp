@@ -66,6 +66,12 @@ struct SafetyConfig
   // IMU-based fall detection
   double fall_gravity_z_threshold{0.3};
   double fall_timeout_s{0.3};
+  // WaitFeedback overall timeout (5s default; 0 = no timeout)
+  double feedback_wait_timeout_s{5.0};
+  // Early temperature warning threshold (C)
+  double temp_warn_c{65.0};
+  // IMU consecutive invalid reads before dropping to Ready (debounce)
+  int imu_debounce_count{10};
 };
 
 struct JointCalibration
@@ -78,7 +84,7 @@ struct JointCalibration
   double max_velocity{20.0};
   double max_torque{3.0};
   double max_kp{50.0};
-  double max_kd{2.0};
+  double max_kd{5.0};  // Matches EL05 spec: kd ∈ [0, 5]
 };
 
 struct DeployConfig
@@ -105,6 +111,12 @@ struct DeployConfig
   double fall_timeout_s{0.3};
   // Command smoothing (0 = disabled)
   double command_smoothing_alpha{0.0};
+  // WaitFeedback overall timeout (0 = no timeout)
+  double feedback_wait_timeout_s{5.0};
+  // Early temperature warning threshold (C)
+  double temp_warn_c{65.0};
+  // IMU consecutive invalid reads before dropping to Ready
+  int imu_debounce_count{10};
   std::array<JointCalibration, kNumJoints> joints{};
 };
 

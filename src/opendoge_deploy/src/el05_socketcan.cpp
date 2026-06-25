@@ -62,7 +62,12 @@ bool El05SocketCan::open(const std::array<JointMap, kNumJoints> & joints)
   stats_ = {};
   motor_to_index_.clear();
   for (std::size_t i = 0; i < joints.size(); ++i) {
-    motor_to_index_[joints[i].motor_id] = i;
+    auto [it, inserted] = motor_to_index_.try_emplace(joints[i].motor_id, i);
+    if (!inserted) {
+      fail("duplicate motor_id " + std::to_string(joints[i].motor_id)
+           + " for joints " + joints[it->second].name + " and " + joints[i].name);
+      return false;
+    }
     if (!openBus(joints[i].can)) {
       return false;
     }

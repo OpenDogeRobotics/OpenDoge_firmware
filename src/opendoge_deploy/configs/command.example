@@ -5,3 +5,5 @@ active=false
 estop=false
 position_control=false
 rl_inference=false
+clear_fault=false
+low_gain_mode=false
