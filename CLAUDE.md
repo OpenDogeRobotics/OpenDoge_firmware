@@ -363,6 +363,10 @@ sudo ./scripts/setup_vcan.sh can0 can1 can2 can3
 `el05_motor_menu.py` 选项 9 原先 `stop()` → `set_zero()` 的流程会破坏运控模式导致标零失效。
 **修复**: 移除 stop(), 直接发 COMM_SET_ZERO + COMM_SAVE_PARAM (0x16) 持久化。
 
+**zero_sta 配置 (2026-06-26)**: 参数索引 **0x7029** (uint8), 出厂默认 0 (位置范围 0~2π)。
+设为 **1** (范围 -π~π) 可解决编码器在零点附近的 π 叠加故障。
+修改后需重启电机生效。CAN 即可写入，不需要 Windows 上位机。
+
 **MuJoCo 趴伏仿真角度 & 校准 offset** (calc_zero_offset.py):
 
 | 关节 | 趴伏角 (rad) | **offset** | 关节 | 趴伏角 (rad) | **offset** |
