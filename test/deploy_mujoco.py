@@ -48,9 +48,11 @@ import numpy as np
 # ─── 尝试导入 MuJoCo ────────────────────────────────────────────────
 try:
     import mujoco
+    from mujoco import viewer as mujoco_viewer
     HAS_MUJOCO = True
 except ImportError:
     HAS_MUJOCO = False
+    mujoco_viewer = None
     print("[WARN] mujoco 未安装。运行: pip install mujoco", file=sys.stderr)
 
 
@@ -68,12 +70,13 @@ JOINT_NAMES = [
     "RR_hip_joint", "RR_thigh_joint", "RR_calf_joint",
 ]
 
-# 默认关节位置 (rad) — 与 defaultJointPosition() 一致
+# 默认关节位置 (rad) — 全 mesh 碰撞 (thigh 除外), 关节失能 10s 稳态
+# base+hip+calf+脚球碰撞, thigh 视觉 mesh (悬空不触地)
 DEFAULT_POS = np.array([
-    0.0, 0.5, -1.3,   # FL
-    0.0, 0.5, -1.3,   # FR
-    0.0, 0.7, -1.3,   # RL
-    0.0, 0.7, -1.3,   # RR
+    0.230,  1.079, -2.681,   # FL
+   -0.230,  1.079, -2.681,   # FR
+    0.231,  1.090, -2.681,   # RL
+   -0.230,  1.084, -2.681,   # RR
 ])
 
 # 关节限位 (rad) — 与 URDF/deploy config 一致
@@ -207,7 +210,7 @@ def build_observation(
 class OpenDogeSimulator:
     """OpenDoge MuJoCo 仿真器"""
 
-    def __init__(self, model_path: str, render: bool = True):
+    def __init__(self, model_path: str, render: bool = True, key_callback=None):
         if not HAS_MUJOCO:
             raise RuntimeError("MuJoCo 未安装: pip install mujoco")
 
@@ -248,7 +251,9 @@ class OpenDogeSimulator:
 
         # 渲染
         if self.render_enabled:
-            self.viewer = mujoco.viewer.launch_passive(self.model, self.data)
+            self.viewer = mujoco_viewer.launch_passive(
+                self.model, self.data, key_callback=key_callback,
+            )
         else:
             self.viewer = None
 
@@ -282,10 +287,12 @@ class OpenDogeSimulator:
             self.data.ctrl[self._actuator_ids[i]] = torque[i]
 
     def reset_to_default_pose(self):
-        """将机器人重置到默认姿态 — 使用 jnt_qposadr"""
+        """将机器人重置到自然趴伏姿态 — 使用 jnt_qposadr, base 贴近地面"""
         mujoco.mj_resetData(self.model, self.data)
         for i in range(NUM_JOINTS):
             self.data.qpos[self._qpos_adr[i]] = DEFAULT_POS[i]
+        # 趴伏位下 base 贴近地面 (XML 默认 z=0.30 是站立高度)
+        self.data.qpos[2] = 0.05
         mujoco.mj_forward(self.model, self.data)
 
     def get_imu(self) -> ImuSample:
@@ -311,13 +318,16 @@ class OpenDogeSimulator:
 
     def render(self):
         """渲染当前帧"""
-        if self.viewer is not None and self.viewer.is_running():
-            self.viewer.sync()
+        if self.viewer is not None:
+            try:
+                if self.viewer.is_running():
+                    self.viewer.sync()
+            except Exception:
+                pass  # 窗口已关闭
 
     def close(self):
-        """关闭仿真"""
-        if self.viewer is not None:
-            self.viewer.close()
+        """关闭仿真 — 不显式调用 viewer.close() 以避免 GLFW segfault"""
+        self.viewer = None  # 放弃引用, 让进程退出时 OS 清理 GLFW
 
     def is_running(self) -> bool:
         """检查渲染窗口是否仍在运行"""
@@ -614,6 +624,7 @@ class DeployController:
         is_ramping = self.runtime_state == RuntimeState.EnteringPosition
 
         if not is_active and not is_ramping:
+            # Ready / WaitFeedback / DampingFault: 关节全失能, 仅阻尼
             kp_gains = np.zeros(NUM_JOINTS)
             kd_gains = np.full(NUM_JOINTS, config.safe_kd)
             target_positions = self.sim.get_joint_positions()
@@ -765,13 +776,11 @@ def main():
         keyboard.active_requested = True
         keyboard.rl_inference = True
 
-    sim = OpenDogeSimulator(model_path, render=not args.no_render)
+    sim = OpenDogeSimulator(
+        model_path, render=not args.no_render,
+        key_callback=key_callback_wrapper(keyboard) if not args.no_render else None,
+    )
     sim.reset_to_default_pose()
-
-    # 注册键盘回调
-    if sim.viewer is not None:
-        # 先设置回调再启动
-        pass  # 在循环中通过 is_running 检查
 
     print(f"默认姿态: {dict(zip(JOINT_NAMES, DEFAULT_POS))}")
     print(
@@ -835,15 +844,19 @@ def main():
     except KeyboardInterrupt:
         print("\n用户中断 (Ctrl+C)")
     finally:
+        sim_time = sim.data.time
         sim.close()
         elapsed = time.time() - start_time
         print(
             f"\n仿真结束。运行 {elapsed:.1f}s, "
-            f"物理时间 {sim.data.time:.2f}s, "
+            f"物理时间 {sim_time:.2f}s, "
             f"{step_count} 步, "
-            f"平均 {step_count / max(elapsed, 0.001):.0f} Hz"
+            f"平均 {step_count / max(elapsed, 0.001):.0f} Hz",
+            flush=True,
         )
 
 
 if __name__ == "__main__":
     main()
+    # GLFW viewer 在 Python 析构阶段会 segfault, 直接干净退出
+    os._exit(0)
