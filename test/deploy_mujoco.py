@@ -70,9 +70,20 @@ JOINT_NAMES = [
     "RR_hip_joint", "RR_thigh_joint", "RR_calf_joint",
 ]
 
-# 默认关节位置 (rad) — 全 mesh 碰撞 (thigh 除外), 关节失能 10s 稳态
-# base+hip+calf+脚球碰撞, thigh 视觉 mesh (悬空不触地)
+# 站立默认姿态 (rad) — 与 UniLab scene_flat.xml keyframe 一致
+# 策略以此位姿训练, 用于观测计算和目标位置基准
+# Front/rear asymmetry is intentional — centres CoM between legs
 DEFAULT_POS = np.array([
+    0.0, 0.5, -1.3,   # FL
+    0.0, 0.5, -1.3,   # FR
+    0.0, 0.7, -1.3,   # RL
+    0.0, 0.7, -1.3,   # RR
+])
+
+# 自然趴伏姿态 (rad) — 关节失能、纯阻尼稳态在平地上
+# 用于 Ready 态的初始位置, 不参与观测/目标计算
+# 实测: base/hip/calf mesh 碰撞 + 脚球, thigh visual only
+REST_POSE = np.array([
     0.230,  1.079, -2.681,   # FL
    -0.230,  1.079, -2.681,   # FR
     0.231,  1.090, -2.681,   # RL
@@ -120,7 +131,7 @@ class DeployConfig:
     safe_kd: float = 2.0
     action_scale: float = 0.50
     pc_startup_ramp_s: float = 2.0
-    pc_startup_max_deviation: float = 0.25
+    pc_startup_max_deviation: float = 2.0  # 趴伏→站立全程跟踪容差
 
 
 @dataclass
@@ -286,13 +297,12 @@ class OpenDogeSimulator:
         for i in range(NUM_JOINTS):
             self.data.ctrl[self._actuator_ids[i]] = torque[i]
 
-    def reset_to_default_pose(self):
-        """将机器人重置到自然趴伏姿态 — 使用 jnt_qposadr, base 贴近地面"""
+    def reset_to_rest_pose(self):
+        """将机器人重置到自然趴伏姿态 (Ready 态初始位)"""
         mujoco.mj_resetData(self.model, self.data)
         for i in range(NUM_JOINTS):
-            self.data.qpos[self._qpos_adr[i]] = DEFAULT_POS[i]
-        # 趴伏位下 base 贴近地面 (XML 默认 z=0.30 是站立高度)
-        self.data.qpos[2] = 0.05
+            self.data.qpos[self._qpos_adr[i]] = REST_POSE[i]
+        self.data.qpos[2] = 0.05  # 趴伏 base 贴近地面
         mujoco.mj_forward(self.model, self.data)
 
     def get_imu(self) -> ImuSample:
@@ -375,7 +385,12 @@ class MockPolicy:
 # ══════════════════════════════════════════════════════════════════════
 
 class KeyboardHandler:
-    """通过 MuJoCo viewer 的键盘回调模拟手柄输入"""
+    """通过 MuJoCo viewer 的键盘回调模拟手柄输入
+
+    GLFW 键码参考:
+      ESC=256, Q=81, Backspace=259, Space=32
+      A=65, B=66, X=88, Y=89
+    """
 
     def __init__(self):
         self.active_requested = False
@@ -386,50 +401,51 @@ class KeyboardHandler:
         self._pending_keys = []
 
     def feed_key(self, keycode: int):
-        """从 viewer callback 接收按键"""
+        """从 viewer callback 接收按键 (GLFW 线程调用)"""
         self._pending_keys.append(keycode)
 
     def process_keys(self):
-        """处理累积的按键"""
+        """处理累积的按键 (主线程调用)"""
         for keycode in self._pending_keys:
             self._handle_key(keycode)
         self._pending_keys.clear()
 
     def _handle_key(self, keycode: int):
-        if keycode in (256, 81):  # ESC, Q
+        if keycode in (256, 257, 81):  # ESC, GLFW_ESCAPE, Q
             self.should_quit = True
+            print(f"[KEY] 退出 (key={keycode})")
 
-        elif keycode in (8,):  # Backspace
+        elif keycode in (259, 8):  # Backspace (GLFW=259, ASCII=8)
             self.estop = True
             self.active_requested = False
             self.position_control = False
             self.rl_inference = False
-            print("[KEY] 急停 (estop)")
+            print(f"[KEY] 急停 estop (key={keycode})")
 
         elif keycode in (65, 32):  # A, Space
             self.estop = False
             self.active_requested = True
             self.position_control = True
             self.rl_inference = False
-            print("[KEY] A: 进入位置控制 (EnteringPosition → ActivePC)")
+            print(f"[KEY] 位置控制 → EnteringPosition (key={keycode})")
 
         elif keycode in (66,):  # B
             self.active_requested = False
             self.position_control = False
             self.rl_inference = False
-            print("[KEY] B: 停用 → Ready (阻尼)")
+            print(f"[KEY] 停用 → Ready (key={keycode})")
 
         elif keycode in (88,):  # X
             if self.active_requested and not self.estop:
                 self.rl_inference = True
                 self.position_control = False
-                print("[KEY] X: 切换到 RL 推理 (ActiveRL)")
+                print(f"[KEY] RL 推理 → ActiveRL (key={keycode})")
 
         elif keycode in (89,):  # Y
             if self.active_requested and not self.estop:
                 self.rl_inference = False
                 self.position_control = True
-                print("[KEY] Y: 切换回位置控制 (ActivePC)")
+                print(f"[KEY] 位置控制 → ActivePC (key={keycode})")
 
     def get_command(
         self, vx: float = 0.0, vy: float = 0.0, yaw_rate: float = 0.0
@@ -487,6 +503,7 @@ class DeployController:
         self.logical_target = DEFAULT_POS.copy()
         self.limited_target = DEFAULT_POS.copy()
         self.pc_startup_start_s = 0.0
+        self._pc_startup_snapshot = DEFAULT_POS.copy()
 
         # 快照时间戳
         self._last_infer_tick = -1
@@ -501,9 +518,10 @@ class DeployController:
         return cmd
 
     def _check_startup_deviation(self) -> bool:
+        """检查 ramp 期间关节跟踪 limited_target (防失控)"""
         q = self.sim.get_joint_positions()
         for i in range(NUM_JOINTS):
-            if abs(q[i] - DEFAULT_POS[i]) > self.config.pc_startup_max_deviation:
+            if abs(q[i] - self.limited_target[i]) > self.config.pc_startup_max_deviation:
                 return False
         return True
 
@@ -531,9 +549,13 @@ class DeployController:
                 else:
                     self.runtime_state = RuntimeState.EnteringPosition
                     self.pc_startup_start_s = t
+                    self._pc_startup_snapshot = self.sim.get_joint_positions().copy()
+                    # 将 limited_target 重置到当前关节位, rate_limiter 逐步拉到站立
+                    self.limited_target = self.sim.get_joint_positions().copy()
                     print(
                         f"\n[{t:.3f}s] Ready → EnteringPosition "
-                        f"(斜坡 {config.pc_startup_ramp_s}s)"
+                        f"(斜坡 {config.pc_startup_ramp_s}s, "
+                        f"limited_target←current)"
                     )
 
             elif self.runtime_state == RuntimeState.EnteringPosition:
@@ -735,7 +757,7 @@ def parse_args():
         help="位置控制启动斜坡时长 (秒)"
     )
     p.add_argument(
-        "--max-deviation", type=float, default=0.25,
+        "--max-deviation", type=float, default=2.0,
         help="启动时关节最大允许偏差 (rad)"
     )
     p.add_argument(
@@ -780,9 +802,11 @@ def main():
         model_path, render=not args.no_render,
         key_callback=key_callback_wrapper(keyboard) if not args.no_render else None,
     )
-    sim.reset_to_default_pose()
+    sim.reset_to_rest_pose()
 
-    print(f"默认姿态: {dict(zip(JOINT_NAMES, DEFAULT_POS))}")
+    print(f"站立默认位 (DEFAULT_POS, 策略训练用): {dict(zip(JOINT_NAMES, DEFAULT_POS))}")
+    print(f"趴伏初始位 (REST_POSE, Ready 态):       {dict(zip(JOINT_NAMES, REST_POSE))}")
+    print()
     print(
         f"配置: kp={config.kp}, kd={config.kd}, safe_kd={config.safe_kd}, "
         f"action_scale={config.action_scale}"
