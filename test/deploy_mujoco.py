@@ -140,7 +140,7 @@ class DeployConfig:
     target_hz: float = 200.0
     control_hz: float = 1000.0
     kp: float = 20.0
-    kd: float = 0.3
+    kd: float = 0.0  # MuJoCo joint damping=0.5 handles velocity suppression
     safe_kd: float = 2.0
     action_scale: float = 0.25
     pc_startup_ramp_s: float = 2.0
@@ -988,7 +988,7 @@ def main():
     print(f"趴伏初始位 (REST_POSE, Ready 态):       {dict(zip(JOINT_NAMES, REST_POSE))}")
     print()
     print(
-        f"配置: kp={config.kp}, kd={config.kd}, safe_kd={config.safe_kd}, "
+        f"配置: kp={config.kp}, kd={config.kd} (joint damping=0.5), safe_kd={config.safe_kd}, "
         f"action_scale={config.action_scale}"
     )
     print(f"斜坡: {config.pc_startup_ramp_s}s, 最大偏差: {config.pc_startup_max_deviation}rad")
