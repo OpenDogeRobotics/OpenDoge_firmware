@@ -78,10 +78,6 @@ EL05/RobStride CAN 协议在以下三处实现，参数必须一致：
 | COMM_READ_PARAM | 0x11 | 单个参数读取 | ✅ |
 | COMM_WRITE_PARAM | 0x12 | 单个参数写入 | ✅ |
 | COMM_FAULT_FEEDBACK | 0x15 | 故障反馈帧 | - |
-| COMM_SAVE_PARAM | 0x16 | 数据保存 | - |
-| COMM_BAUD_RATE | 0x17 | 波特率修改 | - |
-| COMM_ACTIVE_REPORT | 0x18 | 主动上报 | - |
-| COMM_PROTOCOL_SWITCH | 0x19 | 协议切换 (CANopen↔私有) | - |
 
 ### 3. CAN 硬件 (USB-CAN 适配器)
 

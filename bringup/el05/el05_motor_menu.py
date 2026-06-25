@@ -1,12 +1,37 @@
 #!/usr/bin/env python3
-"""Interactive EL05/RobStride motor test menu over SocketCAN.
+"""
+OpenDoge EL05/RobStride 电机交互调测菜单 (SocketCAN)。
 
-This tool targets the OpenDoge production signal path:
+协议: RobStride 私有 29-bit 扩展 CAN 帧 (非 CANopen)
+硬件: 上位机 → CANable/candleLight (gs_usb) → SocketCAN(can0-3) → EL05 电机
+手册: docs/EL05使用说明书2600428.pdf
 
-    host -> SocketCAN(can0/can1/...) -> USB2CAN forwarding board -> EL05 bus
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+快速使用
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-It intentionally contains no LK/Lingkong support. EL05 is a RobStride/RS
-motor and uses the RobStride private 29-bit extended CAN protocol here.
+  前置条件: CAN 接口已启动 (sudo ip link set up canX), 电机已上电
+
+  启动菜单:
+    python3 bringup/el05/el05_motor_menu.py --channel can3
+    python3 bringup/el05/el05_motor_menu.py --channel can3 --master-id 0xfd
+
+  只读操作 (安全, 不发控制指令):
+    0: 发现电机    — 扫描总线, 列出所有电机及其位置/速度/模式
+    2: 读取位置    — 查询指定电机的 mechPos/mechVel
+    3: 监听状态    — 被动接收电机主动上报的反馈帧
+    10: 读取故障   — 查询 faultSta 寄存器, 显示故障位含义
+
+  控制操作 (需确认, ⚠️ 谨慎):
+    4: 使能  5: 停止  6: 清故障  7: 运控模式
+    8: 小幅运动测试  9: 机械置零  11: 修改CAN ID
+
+  新电机接入流程:
+    1. 选项 0 发现 — 确认电机 ID (出厂=127)
+    2. 选项 11 — 将 ID 从 127 改为标准 ID (如 12)
+    3. 选项 0 再次发现 — 确认修改成功
+    4. 选项 2 — 验证位置读数正常
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
 
 from __future__ import annotations
@@ -25,13 +50,17 @@ from typing import Iterable, Optional
 CAN_EFF_FLAG = 0x80000000
 CAN_EFF_MASK = 0x1FFFFFFF
 
+COMM_GET_DEVICE_ID = 0x00
 COMM_CONTROL = 0x01
 COMM_STATUS = 0x02
 COMM_ENABLE = 0x03
 COMM_STOP = 0x04
 COMM_SET_ZERO = 0x06
+COMM_SET_CAN_ID = 0x07
 COMM_READ_PARAM = 0x11
 COMM_WRITE_PARAM = 0x12
+COMM_FAULT_FEEDBACK = 0x15
+COMM_SAVE_PARAM = 0x16
 
 IDX_RUN_MODE = 0x7005
 IDX_MECH_POS = 0x7019
@@ -50,6 +79,8 @@ KP_MAX = 500.0
 KD_MIN = 0.0
 KD_MAX = 5.0
 
+RUN_MODE_NAMES = {0: "运控", 1: "位置", 2: "速度", 3: "电流"}
+
 DEFAULT_MOTORS = [
     ("FL_hip_joint", 1),
     ("FL_thigh_joint", 2),
@@ -64,6 +95,20 @@ DEFAULT_MOTORS = [
     ("RR_thigh_joint", 11),
     ("RR_calf_joint", 12),
 ]
+
+FAULT_NAMES = {
+    0: "欠压",
+    1: "驱动芯片",
+    2: "过温",
+    3: "过压",
+    4: "B相过流",
+    5: "C相过流",
+    7: "编码器未标定",
+    8: "硬件识别",
+    9: "位置初始化",
+    14: "堵转过载",
+    16: "A相过流",
+}
 
 
 @dataclass
@@ -154,7 +199,7 @@ class El05Bus:
 
     def send(self, comm_type: int, motor_id: int, data: Iterable[int] = (), data2: Optional[int] = None) -> None:
         if self.sock is None:
-            raise RuntimeError("CAN socket is not open")
+            raise RuntimeError("CAN 套接字未打开")
         if data2 is None:
             data2 = self.master_id
         can_id = build_ext_id(comm_type, data2, motor_id)
@@ -162,7 +207,7 @@ class El05Bus:
 
     def recv(self, timeout: float = 0.0) -> Optional[tuple[int, bytes]]:
         if self.sock is None:
-            raise RuntimeError("CAN socket is not open")
+            raise RuntimeError("CAN 套接字未打开")
         ready, _, _ = select.select([self.sock], [], [], timeout)
         if not ready:
             return None
@@ -174,6 +219,38 @@ class El05Bus:
     def drain(self) -> None:
         while self.recv(0.0) is not None:
             pass
+
+    def discover(self, timeout: float = 1.0) -> list[int]:
+        """发现总线上的所有电机 (COMM_GET_DEVICE_ID 0x00, 纯只读)。"""
+        data = [0] * 8
+        self.send(COMM_GET_DEVICE_ID, 0xFF, data)
+        found: set[int] = set()
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            frame = self.recv(max(0.01, deadline - time.monotonic()))
+            if frame is None:
+                continue
+            can_id, _payload = frame
+            comm_type, data2, _target = parse_ext_id(can_id)
+            if comm_type == COMM_GET_DEVICE_ID:
+                motor_id = data2 & 0xFF
+                found.add(motor_id)
+        if not found:
+            for mid in range(1, 128):
+                self.send(COMM_GET_DEVICE_ID, mid, [0] * 8)
+                frame = self.recv(0.03)
+                if frame:
+                    can_id, _payload = frame
+                    comm_type, data2, _target = parse_ext_id(can_id)
+                    if comm_type == COMM_GET_DEVICE_ID:
+                        found.add(data2 & 0xFF)
+        return sorted(found)
+
+    def set_can_id(self, motor_id: int, new_id: int) -> Optional[MotorStatus]:
+        """修改电机 CAN ID (通信类型 7)，立即生效。"""
+        data = [0] * 8
+        self.send(COMM_SET_CAN_ID, motor_id, data, data2=(new_id << 8) | self.master_id)
+        return self.wait_status(motor_id, timeout=0.5)
 
     def wait_status(self, motor_id: int, timeout: float = 0.5) -> Optional[MotorStatus]:
         deadline = time.monotonic() + timeout
@@ -244,12 +321,9 @@ class El05Bus:
         data = [
             IDX_RUN_MODE & 0xFF,
             (IDX_RUN_MODE >> 8) & 0xFF,
-            0,
-            0,
+            0, 0,
             RUN_MODE_MOTION,
-            0,
-            0,
-            0,
+            0, 0, 0,
         ]
         self.send(COMM_WRITE_PARAM, motor_id, data)
         return self.wait_status(motor_id, timeout=0.5)
@@ -261,14 +335,10 @@ class El05Bus:
         kp_u = float_to_uint(kp, KP_MIN, KP_MAX)
         kd_u = float_to_uint(kd, KD_MIN, KD_MAX)
         data = [
-            (q_u >> 8) & 0xFF,
-            q_u & 0xFF,
-            (dq_u >> 8) & 0xFF,
-            dq_u & 0xFF,
-            (kp_u >> 8) & 0xFF,
-            kp_u & 0xFF,
-            (kd_u >> 8) & 0xFF,
-            kd_u & 0xFF,
+            (q_u >> 8) & 0xFF, q_u & 0xFF,
+            (dq_u >> 8) & 0xFF, dq_u & 0xFF,
+            (kp_u >> 8) & 0xFF, kp_u & 0xFF,
+            (kd_u >> 8) & 0xFF, kd_u & 0xFF,
         ]
         self.send(COMM_CONTROL, motor_id, data, data2=tau_u)
 
@@ -277,21 +347,32 @@ def motor_label(motors: list[tuple[str, int]], motor_id: int) -> str:
     for name, mid in motors:
         if mid == motor_id:
             return name
-    return f"id_{motor_id}"
+    return f"电机_{motor_id}"
+
+
+def fault_description(fault: int) -> str:
+    if fault == 0:
+        return "无"
+    parts = []
+    for bit, name in FAULT_NAMES.items():
+        if fault & (1 << bit):
+            parts.append(name)
+    return ", ".join(parts) if parts else f"0x{fault:02X}"
 
 
 def print_status(status: Optional[MotorStatus], name: str = "") -> None:
     if status is None:
-        print("  no response")
+        print("  无响应")
         return
     prefix = f"{name} " if name else ""
+    mode_name = RUN_MODE_NAMES.get(status.mode, str(status.mode))
     print(
-        f"  {prefix}id={status.motor_id:02d} "
-        f"q={status.position:+.4f} rad "
-        f"dq={status.velocity:+.3f} rad/s "
-        f"tau={status.torque:+.3f} Nm "
-        f"temp={status.temperature:.1f} C "
-        f"mode={status.mode} fault=0x{status.fault:02X}"
+        f"  {prefix}ID={status.motor_id:02d}  "
+        f"位置={status.position:+.4f} rad  "
+        f"速度={status.velocity:+.3f} rad/s  "
+        f"力矩={status.torque:+.3f} Nm  "
+        f"温度={status.temperature:.1f}°C  "
+        f"模式={mode_name}  故障={fault_description(status.fault)}"
     )
 
 
@@ -299,94 +380,185 @@ def parse_ids(text: str, motors: list[tuple[str, int]]) -> Optional[list[int]]:
     text = text.strip()
     if not text:
         return None
-    if text.lower() in {"q", "quit", "back"}:
+    if text.lower() in {"q", "quit", "back", "返回"}:
         return []
-    if text.lower() in {"a", "all"}:
+    if text.lower() in {"a", "all", "全部"}:
         return [mid for _name, mid in motors]
 
     by_name = {name: mid for name, mid in motors}
     result: list[int] = []
-    for token in text.replace(",", " ").split():
+    for token in text.replace(",", " ").replace("，", " ").split():
         if token in by_name:
             result.append(by_name[token])
             continue
         try:
             value = int(token, 0)
         except ValueError:
-            print(f"  unknown motor token: {token}")
+            print(f"  无法识别: {token}")
             return None
         if value < 1 or value > 127:
-            print(f"  invalid motor id: {value}")
+            print(f"  ID 超出范围 (1-127): {value}")
             return None
         result.append(value)
     return result
 
 
 def prompt_ids(motors: list[tuple[str, int]]) -> list[int]:
-    print("\nMotors:")
+    print("\n电机列表:")
     for idx, (name, motor_id) in enumerate(motors):
-        print(f"  {idx:02d}: id={motor_id:02d} {name}")
-    print("  input examples: 1 | 1,2,3 | FL_hip_joint | a | q")
+        print(f"  {idx:02d}: ID={motor_id:02d}  {name}")
+    print("  输入示例: 1 | 1,2,3 | FL_hip_joint | a(全部) | q(返回)")
     while True:
-        selected = parse_ids(input("Select motor(s): "), motors)
+        selected = parse_ids(input("选择电机: "), motors)
         if selected is not None:
             return selected
 
 
-def confirm(prompt: str) -> bool:
-    return input(f"{prompt} Type 'y' to continue: ").strip().lower() == "y"
+def confirm(prompt: str) -> Optional[bool]:
+    """返回 True=确认, False=取消, None=退出(q)"""
+    ans = input(f"{prompt} [y=确认 / n=取消 / q=退出]: ").strip().lower()
+    if ans in {"q", "quit", "exit", "退出"}:
+        return None
+    return ans == "y"
 
 
-def read_float(prompt: str, default: float, low: float, high: float) -> float:
-    text = input(f"{prompt} [{default}]: ").strip()
+def read_float(prompt: str, default: float, low: float, high: float) -> Optional[float]:
+    """读取浮点数, 空输入用默认值, 输入 q 返回 None 表示退出"""
+    text = input(f"{prompt} [{default}] (q=退出): ").strip()
     if not text:
-        value = default
-    else:
-        try:
-            value = float(text)
-        except ValueError:
-            print(f"  invalid value, using default {default}")
-            value = default
+        return default
+    if text.lower() in {"q", "quit", "exit", "退出"}:
+        return None
+    try:
+        value = float(text)
+    except ValueError:
+        print(f"  无效输入, 使用默认值 {default}")
+        return default
     return clamp(value, low, high)
 
 
+def prompt_ids_with_discover(bus: El05Bus, motors: list[tuple[str, int]],
+                             channel: str = "") -> Optional[list[int]]:
+    """先扫描总线, 列出在线电机供选择。返回所选 ID 列表, 空列表=退出。"""
+    print("正在扫描总线 (只读)...")
+    bus.drain()
+    online = bus.discover(timeout=1.5)
+    if not online:
+        print("  未发现任何电机")
+        return None
+
+    # 根据通道推断目标 ID 范围
+    channel_targets = {
+        "can0": (1, 2, 3), "can1": (4, 5, 6),
+        "can2": (7, 8, 9), "can3": (10, 11, 12),
+    }
+    suggested = channel_targets.get(channel, (1, 2, 3))
+
+    known = {mid: name for name, mid in motors}
+    print(f"\n当前总线在线电机:")
+    for mid in online:
+        name = known.get(mid, "")
+        id_hint = ""
+        if mid not in known:
+            # 给非标准ID建议一个目标ID
+            unused = [t for t in suggested if t not in [m for m in online if m in known]]
+            hint_id = unused[0] if unused else suggested[0]
+            id_hint = f" → 建议改为 {hint_id}"
+        pos = bus.read_param_float(mid, IDX_MECH_POS, timeout=0.3)
+        pos_str = f"  位置={pos:+.4f} rad" if pos is not None else ""
+        label = f"  [{online.index(mid)}] ID={mid:3d} {name}" if name else f"  [{online.index(mid)}] ID={mid:3d} (非标准,{id_hint})"
+        print(f"{label}{pos_str}")
+
+    print(f"\n  输入 q 返回上级")
+    sel = input("选择电机 (输入编号或 ID): ").strip()
+    if sel.lower() in {"q", "quit", "exit", "返回", ""}:
+        return []
+    try:
+        idx = int(sel)
+        if 0 <= idx < len(online):
+            return [online[idx]]
+    except ValueError:
+        pass
+    try:
+        mid = int(sel)
+        if 1 <= mid <= 127:
+            return [mid]
+    except ValueError:
+        pass
+    print(f"  无效选择: {sel}")
+    return None
+
+
+# ============================================================
+# 菜单命令
+# ============================================================
+
+def cmd_discover(bus: El05Bus, motors: list[tuple[str, int]]) -> None:
+    """只读: 扫描总线发现所有电机 (COMM_GET_DEVICE_ID, 不控制电机)。"""
+    print("正在扫描 CAN 总线 (只读, 不控制电机)...")
+    bus.drain()
+    found = bus.discover(timeout=1.5)
+    if not found:
+        print("  未发现任何电机")
+        return
+    print(f"  发现 {len(found)} 个电机: {found}")
+    known = {mid: name for name, mid in motors}
+    for mid in found:
+        name = known.get(mid, "")
+        extra = ""
+        if mid not in known:
+            extra = " ⚠️ 非标准ID (出厂默认, 需改为 1-12)" if mid == 127 else " ⚠️ 非标准ID"
+        label = f"  ID={mid:3d}  {name}" if name else f"  ID={mid:3d}"
+        print(f"{label}{extra}")
+        pos = bus.read_param_float(mid, IDX_MECH_POS, timeout=0.3)
+        if pos is not None:
+            vel = bus.read_param_float(mid, IDX_MECH_VEL, timeout=0.3)
+            mode = bus.read_param_float(mid, IDX_RUN_MODE, timeout=0.3)
+            v_str = f"速度={vel:+.3f} rad/s" if vel is not None else ""
+            m_str = f"模式={RUN_MODE_NAMES.get(int(mode), str(mode))}" if mode is not None else ""
+            print(f"       位置={pos:+.4f} rad  {v_str}  {m_str}")
+
+
 def cmd_read_position(bus: El05Bus, motors: list[tuple[str, int]]) -> None:
+    """只读: 读取指定电机的机械位置和速度。"""
     ids = prompt_ids(motors)
+    if not ids:
+        return
     for motor_id in ids:
         bus.drain()
         pos = bus.read_param_float(motor_id, IDX_MECH_POS)
         vel = bus.read_param_float(motor_id, IDX_MECH_VEL)
         name = motor_label(motors, motor_id)
         if pos is None:
-            print(f"  {name} id={motor_id:02d} no position response")
+            print(f"  {name} ID={motor_id:02d}  无响应")
         else:
-            vel_text = "n/a" if vel is None else f"{vel:+.3f} rad/s"
-            print(f"  {name} id={motor_id:02d} mechPos={pos:+.4f} rad mechVel={vel_text}")
-
-
-def describe_bits(value: int) -> str:
-    if value == 0:
-        return "none"
-    return ",".join(f"bit{bit}" for bit in range(32) if value & (1 << bit))
+            vel_text = f"速度={vel:+.3f} rad/s" if vel is not None else "速度=n/a"
+            print(f"  {name} ID={motor_id:02d}  位置={pos:+.4f} rad  {vel_text}")
 
 
 def cmd_read_fault_status(bus: El05Bus, motors: list[tuple[str, int]]) -> None:
+    """只读: 读取故障状态寄存器 (0x3022)。"""
     ids = prompt_ids(motors)
+    if not ids:
+        return
     for motor_id in ids:
         bus.drain()
         fault_sta = bus.read_param_uint32(motor_id, IDX_FAULT_STA)
         name = motor_label(motors, motor_id)
         if fault_sta is None:
-            print(f"  {name} id={motor_id:02d} no faultSta response")
+            print(f"  {name} ID={motor_id:02d}  无响应")
         else:
-            print(f"  {name} id={motor_id:02d} faultSta=0x{fault_sta:08X} [{describe_bits(fault_sta)}]")
+            bits = [b for b in range(32) if fault_sta & (1 << b)]
+            desc = ", ".join(FAULT_NAMES.get(b, f"bit{b}") for b in bits) if bits else "无"
+            print(f"  {name} ID={motor_id:02d}  faultSta=0x{fault_sta:08X} [{desc}]")
 
 
 def cmd_monitor(bus: El05Bus, motors: list[tuple[str, int]]) -> None:
+    """只读: 被动监听电机主动上报的状态帧。"""
     ids = prompt_ids(motors)
     if not ids:
         return
-    print("Listening for feedback frames only. Press Enter to stop.")
+    print("被动监听状态帧 (仅接收, 不发送任何指令)。按 Enter 停止。")
     count = 0
     selected = set(ids)
     while True:
@@ -405,13 +577,30 @@ def cmd_monitor(bus: El05Bus, motors: list[tuple[str, int]]) -> None:
 
 
 def cmd_simple(bus: El05Bus, motors: list[tuple[str, int]], action: str) -> None:
+    """控制操作: 使能/停止/清故障/置零/设模式。"""
+    labels = {
+        "enable": "使能",
+        "stop": "停止",
+        "clear": "清除故障",
+        "zero": "设置机械零位",
+        "mode_motion": "设为运控模式",
+    }
+    warnings = {
+        "zero": "⚠️ 设置机械零位将改变电机参考零点, 请确认关节处于目标零位!",
+        "clear": "⚠️ 将清除所选电机的故障状态。",
+        "mode_motion": "⚠️ 将把电机切换到运控模式。",
+    }
+
     ids = prompt_ids(motors)
     if not ids:
         return
-    if action == "zero" and not confirm("Setting mechanical zero changes the motor reference."):
-        return
-    if action in {"stop_all", "clear"} and not confirm("This will affect selected motor(s)."):
-        return
+
+    action_label = labels.get(action, action)
+    if action in warnings:
+        ans = confirm(warnings[action])
+        if ans is None or not ans:
+            print("  已取消")
+            return
 
     for motor_id in ids:
         bus.drain()
@@ -431,22 +620,34 @@ def cmd_simple(bus: El05Bus, motors: list[tuple[str, int]], action: str) -> None
             status = bus.write_run_mode_motion(motor_id)
         else:
             raise ValueError(action)
+        print(f"  [{action_label}] ", end="")
         print_status(status, motor_label(motors, motor_id))
 
 
-def cmd_jog(bus: El05Bus, motors: list[tuple[str, int]]) -> None:
-    ids = prompt_ids(motors)
-    if len(ids) != 1:
-        print("  jog supports exactly one motor")
-        return
-    motor_id = ids[0]
-    amp = read_float("Amplitude rad", 0.05, 0.0, 0.30)
-    freq = read_float("Frequency Hz", 0.25, 0.01, 2.0)
-    duration = read_float("Duration sec", 4.0, 0.1, 20.0)
-    kp = read_float("Kp", 5.0, KP_MIN, KP_MAX)
-    kd = read_float("Kd", 0.2, KD_MIN, KD_MAX)
+def cmd_jog(bus: El05Bus, motors: list[tuple[str, int]], channel: str = "") -> None:
+    """控制操作: 单电机小幅正弦运动测试 (每步可 q 退出)。"""
+    print("\n════════ 小幅运动测试 ════════")
 
-    if not confirm("Jog will enable the motor and send motion-control frames."):
+    result = prompt_ids_with_discover(bus, motors, channel)
+    if result is None or not result:
+        print("  已取消")
+        return
+    motor_id = result[0]
+
+    amp = read_float("振幅 (rad)", 0.05, 0.0, 0.30)
+    if amp is None: print("  已取消"); return
+    freq = read_float("频率 (Hz)", 0.25, 0.01, 2.0)
+    if freq is None: print("  已取消"); return
+    duration = read_float("持续时间 (秒)", 4.0, 0.1, 20.0)
+    if duration is None: print("  已取消"); return
+    kp = read_float("Kp", 5.0, KP_MIN, KP_MAX)
+    if kp is None: print("  已取消"); return
+    kd = read_float("Kd", 0.2, KD_MIN, KD_MAX)
+    if kd is None: print("  已取消"); return
+
+    ans = confirm("⚠️ 将使能电机并发送运动控制帧!")
+    if ans is None or not ans:
+        print("  已取消")
         return
 
     bus.drain()
@@ -457,7 +658,7 @@ def cmd_jog(bus: El05Bus, motors: list[tuple[str, int]]) -> None:
     status = bus.enable(motor_id)
     print_status(status, motor_label(motors, motor_id))
     if status is None:
-        print("  abort: no initial status")
+        print("  中止: 未收到电机状态")
         return
 
     center = status.position
@@ -477,39 +678,122 @@ def cmd_jog(bus: El05Bus, motors: list[tuple[str, int]]) -> None:
             next_t += period
             time.sleep(max(0.0, next_t - time.monotonic()))
     except KeyboardInterrupt:
-        print("\n  interrupted")
+        print("\n  用户中断")
     finally:
         bus.control_motion(motor_id, center, 0.0, 0.0, kp, kd)
         time.sleep(0.05)
         bus.stop(motor_id)
-        print("  stopped")
+        print("  已停止")
+
+
+def cmd_set_can_id(bus: El05Bus, motors: list[tuple[str, int]], channel: str = "") -> None:
+    """修改电机 CAN ID — 先扫描总线, 选择在线电机, 改到目标 ID。"""
+    print("\n════════ 修改电机 CAN ID ════════")
+    print("步骤 1/3: 扫描总线发现在线电机...")
+
+    # 用改进的选择器
+    result = prompt_ids_with_discover(bus, motors, channel)
+    if result is None:
+        return
+    if not result:
+        print("  已取消")
+        return
+    old_id = result[0]
+
+    # 确认当前电机
+    name = motor_label(motors, old_id)
+    print(f"\n步骤 2/3: 当前电机 ID={old_id} ({name})")
+    pos = bus.read_param_float(old_id, IDX_MECH_POS, timeout=0.3)
+    if pos is not None:
+        print(f"  位置: {pos:+.4f} rad")
+
+    # 建议新 ID
+    channel_targets = {"can0": (1,2,3), "can1": (4,5,6), "can2": (7,8,9), "can3": (10,11,12)}
+    suggested = channel_targets.get(channel, (1, 2, 3))
+    # 从建议列表中排除已在线的标准ID
+    already_used = [mid for mid in suggested if mid in {m[1] for m in motors} and mid != old_id]
+    available = [t for t in suggested if t not in already_used or t == old_id]
+    default_new = available[0]
+
+    print(f"  通道 {channel} 建议 ID: {suggested}")
+    new_id_str = input(f"  新 CAN ID [{default_new}] (q=退出): ").strip()
+    if new_id_str.lower() in {"q", "quit", "exit", "退出", ""}:
+        if new_id_str == "":
+            new_id = default_new
+        else:
+            print("  已取消")
+            return
+    else:
+        try:
+            new_id = int(new_id_str)
+        except ValueError:
+            print("  无效 ID, 已取消")
+            return
+        if new_id < 1 or new_id > 127:
+            print("  ID 范围 1-127, 已取消")
+            return
+
+    # 最终确认
+    print(f"\n步骤 3/3: 确认修改")
+    print(f"  通道: {channel}")
+    print(f"  当前 ID: {old_id}  ({name})")
+    print(f"  新 ID:   {new_id}  ({motor_label(motors, new_id)})")
+    print(f"  ⚠️ 立即生效! 旧 ID={old_id} 将不再响应!")
+    ans = input(f"  输入 'yes' 确认执行 (其他键取消): ").strip()
+    if ans != "yes":
+        print("  已取消")
+        return
+
+    bus.stop(old_id)
+    time.sleep(0.05)
+    status = bus.set_can_id(old_id, new_id)
+
+    # 验证
+    time.sleep(0.1)
+    bus.drain()
+    verify_pos = bus.read_param_float(new_id, IDX_MECH_POS, timeout=0.3)
+    if verify_pos is not None:
+        print(f"\n  ✅ ID 修改成功: {old_id} → {new_id}")
+        print(f"  新 ID={new_id} 位置={verify_pos:+.4f} rad")
+    else:
+        print(f"\n  ⚠️ 无响应 — 请用选项 0 (发现) 扫描确认新 ID={new_id}")
 
 
 def print_menu(channel: str, master_id: int) -> None:
     print(
-        f"\nOpenDoge EL05 interactive menu | channel={channel} master=0x{master_id:02X}\n"
-        "  1: list motors\n"
-        "  2: read mech position/velocity params\n"
-        "  3: listen feedback frames\n"
-        "  4: enable selected\n"
-        "  5: stop selected\n"
-        "  6: clear fault selected\n"
-        "  7: set motion mode selected (run_mode=0)\n"
-        "  8: small jog one motor\n"
-        "  9: set mechanical zero selected\n"
-        "  10: read faultSta (0x3022)\n"
-        "  q: quit"
+        f"\n╔══════════════════════════════════════════════════════╗\n"
+        f"║  OpenDoge EL05 电机调测菜单                         ║\n"
+        f"║  通道: {channel:<6s}  主机ID: 0x{master_id:02X}                     ║\n"
+        f"╠══════════════════════════════════════════════════════╣\n"
+        f"║  —— 只读操作 (安全, 不控制电机) ——                   ║\n"
+        f"║  0: 发现电机     扫描总线, 识别所有电机              ║\n"
+        f"║  1: 电机列表     显示电机映射表                     ║\n"
+        f"║  2: 读取位置     读取机械位置和速度                 ║\n"
+        f"║  3: 监听状态     被动接收电机上报的状态帧           ║\n"
+        f"║ 10: 读取故障     读取故障状态寄存器                 ║\n"
+        f"╠══════════════════════════════════════════════════════╣\n"
+        f"║  —— 控制操作 (需确认, ⚠️ 危险) ——                    ║\n"
+        f"║  4: 使能电机     发送使能命令                       ║\n"
+        f"║  5: 停止电机     发送停止命令                       ║\n"
+        f"║  6: 清除故障     停止并清除故障标志                 ║\n"
+        f"║  7: 运控模式     切换为运控模式 (run_mode=0)        ║\n"
+        f"║  8: 小幅运动     单电机正弦运动测试                 ║\n"
+        f"║  9: 机械置零     设置当前角度为零位                 ║\n"
+        f"║ 11: 修改CAN ID   修改电机 CAN 地址 (立即生效)       ║\n"
+        f"╠══════════════════════════════════════════════════════╣\n"
+        f"║  q: 退出                                            ║\n"
+        f"╚══════════════════════════════════════════════════════╝"
     )
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--channel", default="can0", help="SocketCAN interface, e.g. can0")
-    parser.add_argument("--master-id", default="0xfd", help="Host/master CAN id, default 0xfd")
+    parser.add_argument("--channel", default="can0", help="SocketCAN 接口, 如 can0")
+    parser.add_argument("--master-id", default="0xfd", help="主机 CAN ID, 默认 0xfd")
     parser.add_argument(
         "--ids",
         default=",".join(str(mid) for _name, mid in DEFAULT_MOTORS),
-        help="Comma-separated motor ids in OpenDoge joint order.",
+        help="电机 ID 列表 (逗号分隔), 按 OpenDoge 关节顺序",
     )
     return parser
 
@@ -518,23 +802,27 @@ def main() -> int:
     args = build_arg_parser().parse_args()
     master_id = int(str(args.master_id), 0)
     ids = [int(x, 0) for x in args.ids.replace(",", " ").split()]
-    motors = [(DEFAULT_MOTORS[i][0] if i < len(DEFAULT_MOTORS) else f"motor_{i+1}", mid) for i, mid in enumerate(ids)]
+    motors = [(DEFAULT_MOTORS[i][0] if i < len(DEFAULT_MOTORS) else f"电机_{i+1}", mid)
+              for i, mid in enumerate(ids)]
 
     bus = El05Bus(args.channel, master_id)
     try:
         bus.open()
     except OSError as exc:
-        print(f"Failed to open {args.channel}: {exc}")
-        print("Check: sudo ip link set can0 type can bitrate 1000000 && sudo ip link set up can0")
+        print(f"无法打开 {args.channel}: {exc}")
+        print("请检查: sudo ip link set can0 type can bitrate 1000000 && sudo ip link set up can0")
         return 1
 
     try:
         while True:
             print_menu(args.channel, master_id)
-            choice = input("Select: ").strip().lower()
-            if choice == "1":
+            choice = input("请选择: ").strip().lower()
+            if choice == "0":
+                cmd_discover(bus, motors)
+            elif choice == "1":
+                print("\n电机映射表:")
                 for name, motor_id in motors:
-                    print(f"  id={motor_id:02d} {name}")
+                    print(f"  ID={motor_id:02d}  {name}")
             elif choice == "2":
                 cmd_read_position(bus, motors)
             elif choice == "3":
@@ -548,15 +836,18 @@ def main() -> int:
             elif choice == "7":
                 cmd_simple(bus, motors, "mode_motion")
             elif choice == "8":
-                cmd_jog(bus, motors)
+                cmd_jog(bus, motors, args.channel)
             elif choice == "9":
                 cmd_simple(bus, motors, "zero")
             elif choice == "10":
                 cmd_read_fault_status(bus, motors)
-            elif choice in {"q", "quit", "exit"}:
+            elif choice == "11":
+                cmd_set_can_id(bus, motors, args.channel)
+            elif choice in {"q", "quit", "exit", "退出"}:
+                print("再见!")
                 break
             else:
-                print("  unknown selection")
+                print("  无效选项, 请输入 0-11 或 q")
     finally:
         bus.close()
     return 0

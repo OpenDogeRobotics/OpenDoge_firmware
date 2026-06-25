@@ -1,32 +1,28 @@
 #!/usr/bin/env python3
-"""OpenDoge motor calibration tool — compute JointCalibration.offset values.
+"""
+OpenDoge 电机标定工具 — 计算 JointCalibration.offset 补偿值。
 
-Offsets compensate for the difference between a motor's encoder zero and the
-URDF reference angle.  This tool NEVER calls COMM_SET_ZERO — it only reads
-mechPos (0x7019) and computes software offsets you append to the deploy config.
+补偿电机编码器零点与 URDF 参考角度之间的偏差。此工具**绝不发送 COMM_SET_ZERO**,
+只读取 mechPos (0x7019) 计算软件偏移量, 写入 deploy 配置文件。
 
-Two modes
----------
-  interactive   Operator positions each joint one at a time to its URDF
-                reference angle, presses Enter, and the tool reads mechPos
-                to compute offset = motor_pos - direction * ref_angle.
+参考角度 (来自 C++ defaultJointPosition / UniLab scene_flat.xml):
+  hip        0.0 rad  (全部四条腿)
+  thigh      0.5 rad  (前腿),  0.7 rad  (后腿)
+  calf      -1.3 rad  (全部四条腿)
 
-  batch         Operator puts the whole robot in default standing pose,
-                then the tool reads all 12 motors at once and computes
-                all offsets.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+快速使用
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Reference angles (from C++ defaultJointPosition / UniLab scene_flat.xml):
-  hip        0.0 rad  (all four)
-  thigh      0.5 rad  (front),  0.7 rad  (rear)
-  calf      -1.3 rad  (all four)
+  交互式 (逐关节标定, 推荐首次使用):
+    python3 bringup/el05/el05_calibrate.py --channel can0
 
-Usage
------
-  # Interactive (recommended for first calibration)
-  python3 bringup/el05/el05_calibrate.py --channel can0
+  批量模式 (机器人已处于站立姿态):
+    python3 bringup/el05/el05_calibrate.py --channel can0 --batch
 
-  # Batch (robot already in standing pose)
-  python3 bringup/el05/el05_calibrate.py --channel can0 --batch
+  注意: 此工具只读位置不控制电机, 需人工将关节摆到参考角度后按 Enter 读数。
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+"""
 
   # Verify existing calibration
   python3 bringup/el05/el05_calibrate.py --channel can0 --verify

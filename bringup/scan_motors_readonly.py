@@ -2,14 +2,39 @@
 """
 EL05 只读电机扫描工具 — 不发送任何控制指令 (不使能、不置零、不写参数)。
 
-协议: EL05 / RobStride 29-bit 扩展 CAN 帧
-参考: docs/EL05使用说明书2600428.pdf, el05_motor_menu.py
+使用 COMM_GET_DEVICE_ID (0x00) 发现电机 + COMM_READ_PARAM (0x11) 读取参数。
+纯只读, 不会驱动电机转动, 可安全使用。
 
-用法:
-    python3 scan_motors_readonly.py                     # 扫描全部 4 通道
-    python3 scan_motors_readonly.py --channel can3      # 只扫 can3
-    python3 scan_motors_readonly.py --all-ids           # 扫描 ID 1-127 (含出厂默认)
-    python3 scan_motors_readonly.py --listen 3          # 扫描后额外被动监听 3 秒
+协议: EL05 / RobStride 29-bit 扩展 CAN 帧
+手册: docs/EL05使用说明书2600428.pdf
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+快速使用
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  前置条件:
+    sudo modprobe gs_usb can can_raw
+    sudo ip link set can0 type can bitrate 1000000; sudo ip link set up can0
+    # ... can1/can2/can3 同理
+
+  扫描全部四通道标准 ID (1-12):
+    python3 bringup/scan_motors_readonly.py
+
+  扫描全部 ID 含出厂默认 (1-127):
+    python3 bringup/scan_motors_readonly.py --all-ids
+
+  只扫指定通道/电机:
+    python3 bringup/scan_motors_readonly.py --channel can3
+    python3 bringup/scan_motors_readonly.py --channel can3 --ids 10,11,12
+
+  扫描后被动监听 3 秒 (捕获实时状态帧):
+    python3 bringup/scan_motors_readonly.py --listen 3
+
+  常见问题:
+    - 无响应: 检查电机 24V 供电、CAN 终端电阻 (120Ω)、USB Hub 外部供电
+    - 出厂 ID=127: 新电机默认 ID, 需用 EDULITE-TOOL 改为 1-12
+    - ERROR-PASSIVE: CAN 总线无终端电阻或无设备
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
 
 from __future__ import annotations
