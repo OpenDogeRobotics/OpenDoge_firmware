@@ -17,11 +17,15 @@ deploy_mujoco.py — OpenDoge MuJoCo 仿真测试
   - 斜坡时长：pc_startup_ramp_s=2.0
 
 用法:
-  python3 deploy_mujoco.py                          # 位置控制模式
-  python3 deploy_mujoco.py --mode rl                # RL 推理模式 (模拟)
-  python3 deploy_mujoco.py --duration 10            # 运行 10 秒
-  python3 deploy_mujoco.py --no-render              # 无渲染 (headless)
-  python3 deploy_mujoco.py --cmd 0.3 0 0            # 静态速度命令
+  python3 deploy_mujoco.py --policy policy/opendoge_r5.onnx  # idle 起步, 手动走完整流程
+  python3 deploy_mujoco.py --mode rl --policy policy/opendoge_r5.onnx  # 直接进入 RL
+  python3 deploy_mujoco.py --no-render --duration 10          # headless 测试
+
+完整手动流程 (键盘):
+  idle (Ready 趴伏) → A/空格 → EnteringPosition → ActivePC (站立)
+  ActivePC → X → ActiveRL (RL 推理, 方向键控制运动)
+  ActiveRL → Y → ActivePC (切回站立)
+  ActivePC/ActiveRL → B → Ready (趴伏)
 
 键盘控制 (渲染窗口):
   A / 空格   — 激活位置控制 (EnteringPosition → ActivePC)
@@ -31,7 +35,7 @@ deploy_mujoco.py — OpenDoge MuJoCo 仿真测试
   BACKSPACE  — 急停 (estop)
   ESC / Q    — 退出
 
-依赖: pip install mujoco numpy
+依赖: pip install mujoco numpy onnxruntime
 """
 
 import argparse
@@ -44,6 +48,15 @@ from enum import Enum
 from typing import Optional, Tuple
 
 import numpy as np
+
+# ─── 尝试导入 ONNX Runtime ──────────────────────────────────────────
+try:
+    import onnxruntime as ort
+    HAS_ONNX = True
+except ImportError:
+    HAS_ONNX = False
+    ort = None
+    print("[WARN] onnxruntime 未安装。运行: pip install onnxruntime", file=sys.stderr)
 
 # ─── 尝试导入 MuJoCo ────────────────────────────────────────────────
 try:
@@ -380,6 +393,29 @@ class MockPolicy:
         return True, np.clip(action, -1.0, 1.0), ""
 
 
+class OnnxPolicy:
+    """通过 ONNX Runtime 加载真实 RL 策略进行推理。"""
+
+    def __init__(self, model_path: str):
+        if not HAS_ONNX:
+            raise RuntimeError("onnxruntime 未安装: pip install onnxruntime")
+        self._session = ort.InferenceSession(
+            model_path,
+            providers=["CPUExecutionProvider"],
+        )
+        self.call_count = 0
+
+    def infer(self, obs: np.ndarray) -> Tuple[bool, np.ndarray, str]:
+        """ONNX 推理。返回 (success, action, error_msg)"""
+        self.call_count += 1
+        try:
+            input_feed = {"obs": obs.astype(np.float32).reshape(1, -1)}
+            action = self._session.run(None, input_feed)[0]
+            return True, action.flatten(), ""
+        except Exception as e:
+            return False, np.zeros(NUM_JOINTS), f"ONNX inference error: {e}"
+
+
 # ══════════════════════════════════════════════════════════════════════
 # 键盘输入 (模拟手柄)
 # ══════════════════════════════════════════════════════════════════════
@@ -390,6 +426,7 @@ class KeyboardHandler:
     GLFW 键码参考:
       ESC=256, Q=81, Backspace=259, Space=32
       A=65, B=66, X=88, Y=89
+      上=265, 下=266, 左=263, 右=262
     """
 
     def __init__(self):
@@ -399,6 +436,9 @@ class KeyboardHandler:
         self.rl_inference = False
         self.should_quit = False
         self._pending_keys = []
+        # 方向键速度命令
+        self._arrow_vx = 0.0
+        self._arrow_yaw = 0.0
 
     def feed_key(self, keycode: int):
         """从 viewer callback 接收按键 (GLFW 线程调用)"""
@@ -420,6 +460,8 @@ class KeyboardHandler:
             self.active_requested = False
             self.position_control = False
             self.rl_inference = False
+            self._arrow_vx = 0.0
+            self._arrow_yaw = 0.0
             print(f"[KEY] 急停 estop (key={keycode})")
 
         elif keycode in (65, 32):  # A, Space
@@ -433,6 +475,8 @@ class KeyboardHandler:
             self.active_requested = False
             self.position_control = False
             self.rl_inference = False
+            self._arrow_vx = 0.0
+            self._arrow_yaw = 0.0
             print(f"[KEY] 停用 → Ready (key={keycode})")
 
         elif keycode in (88,):  # X
@@ -447,14 +491,34 @@ class KeyboardHandler:
                 self.position_control = True
                 print(f"[KEY] 位置控制 → ActivePC (key={keycode})")
 
+        # ── 方向键速度命令 ──────────────────────────────────────────
+        elif keycode == 265:  # ↑ 前进
+            self._arrow_vx = 0.3
+            print(f"[KEY] ↑ vx=+{self._arrow_vx}")
+        elif keycode == 266:  # ↓ 后退
+            self._arrow_vx = -0.2
+            print(f"[KEY] ↓ vx={self._arrow_vx}")
+        elif keycode == 263:  # ← 左转
+            self._arrow_yaw = 1.0
+            print(f"[KEY] ← yaw=+{self._arrow_yaw}")
+        elif keycode == 262:  # → 右转
+            self._arrow_yaw = -1.0
+            print(f"[KEY] → yaw={self._arrow_yaw}")
+        elif keycode == 32:  # Space (已在上面处理, 这里重置方向)
+            pass
+        elif keycode == 48:  # 0 键: 停止移动
+            self._arrow_vx = 0.0
+            self._arrow_yaw = 0.0
+            print(f"[KEY] 0 停止移动")
+
     def get_command(
         self, vx: float = 0.0, vy: float = 0.0, yaw_rate: float = 0.0
     ) -> OperatorCommand:
-        """生成 OperatorCommand"""
+        """生成 OperatorCommand — 方向键优先于静态命令"""
         cmd = OperatorCommand()
-        cmd.vx = vx
+        cmd.vx = self._arrow_vx if self._arrow_vx != 0.0 else vx
         cmd.vy = vy
-        cmd.yaw_rate = yaw_rate
+        cmd.yaw_rate = self._arrow_yaw if self._arrow_yaw != 0.0 else yaw_rate
         cmd.estop = self.estop
 
         active = self.active_requested and not self.estop
@@ -463,6 +527,70 @@ class KeyboardHandler:
         cmd.rl_inference = self.rl_inference if active else False
 
         return cmd
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 日志记录
+# ══════════════════════════════════════════════════════════════════════
+
+class DeployLogger:
+    """CSV 日志记录器 — 每个控制周期记录完整状态, 方便 debug。"""
+
+    COLUMNS = [
+        "t", "state", "fault",
+        "cmd_vx", "cmd_vy", "cmd_yaw", "cmd_active", "cmd_pos", "cmd_rl",
+        "z", "phase", "rl_fb",
+        # 12 joints × {q, dq, target, action, kp, kd, torque}
+        *[f"{j}_{s}" for j in JOINT_NAMES for s in (
+            "q", "dq", "target", "action", "kp", "kd", "torque",
+        )],
+    ]
+
+    def __init__(self, log_path: str, decimation: int = 1):
+        import csv
+        self._file = open(log_path, "w", newline="")
+        self._writer = csv.writer(self._file)
+        self._writer.writerow(self.COLUMNS)
+        self._decimation = decimation
+        self._step = 0
+        self._last_torque = np.zeros(NUM_JOINTS)
+
+    def record(
+        self,
+        t: float,
+        state: "RuntimeState",
+        fault_latched: bool,
+        command: OperatorCommand,
+        q: np.ndarray,
+        dq: np.ndarray,
+        target: np.ndarray,
+        action: np.ndarray,
+        kp: np.ndarray,
+        kd: np.ndarray,
+        z: float,
+        phase: float,
+        rl_fallback: bool,
+        torque: np.ndarray,
+    ):
+        self._step += 1
+        if self._step % self._decimation != 0:
+            return
+        row = [
+            f"{t:.6f}", state.name, int(fault_latched),
+            f"{command.vx:.4f}", f"{command.vy:.4f}", f"{command.yaw_rate:.4f}",
+            int(command.active), int(command.position_control), int(command.rl_inference),
+            f"{z:.6f}", f"{phase:.4f}", int(rl_fallback),
+        ]
+        for i in range(NUM_JOINTS):
+            row += [
+                f"{q[i]:.6f}", f"{dq[i]:.6f}", f"{target[i]:.6f}",
+                f"{action[i]:.6f}", f"{kp[i]:.4f}", f"{kd[i]:.4f}",
+                f"{torque[i]:.6f}",
+            ]
+        self._writer.writerow(row)
+
+    def close(self):
+        self._file.close()
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -481,6 +609,7 @@ class DeployController:
         static_vx: float = 0.0,
         static_vy: float = 0.0,
         static_yaw: float = 0.0,
+        logger: Optional["DeployLogger"] = None,
     ):
         self.sim = sim
         self.config = config
@@ -489,6 +618,7 @@ class DeployController:
         self.static_vx = static_vx
         self.static_vy = static_vy
         self.static_yaw = static_yaw
+        self.logger = logger
 
         # 状态机变量
         self.runtime_state = RuntimeState.Ready
@@ -666,6 +796,27 @@ class DeployController:
 
         self.sim.apply_pd_control(target_positions, kp_gains, kd_gains)
 
+        # ── 日志: 记录控制输出 ──────────────────────────────────────────
+        if self.logger is not None:
+            q = self.sim.get_joint_positions()
+            dq = self.sim.get_joint_velocities()
+            torque = np.array([self.sim.data.ctrl[self.sim._actuator_ids[i]]
+                               for i in range(NUM_JOINTS)])
+            self.logger.record(
+                t=t,
+                state=self.runtime_state,
+                fault_latched=self.fault_latched,
+                command=command,
+                q=q, dq=dq,
+                target=target_positions,
+                action=self.last_action,
+                kp=kp_gains, kd=kd_gains,
+                z=self.sim.data.qpos[2],
+                phase=self.phase,
+                rl_fallback=self.rl_fallback_active,
+                torque=torque,
+            )
+
         # 物理步进
         self.sim.step()
 
@@ -764,6 +915,14 @@ def parse_args():
         "--rl-failure-rate", type=float, default=0.0,
         help="模拟 RL 推理失败率 (0-1, 用于测试降级)"
     )
+    p.add_argument(
+        "--policy", type=str, default="",
+        help="ONNX 策略模型路径 (使用真实 RL 推理替代 mock 策略)"
+    )
+    p.add_argument(
+        "--log-dir", type=str, default="logs",
+        help="日志输出目录 (默认 logs/)"
+    )
     return p.parse_args()
 
 
@@ -789,7 +948,11 @@ def main():
         pc_startup_max_deviation=args.max_deviation,
     )
     keyboard = KeyboardHandler()
-    mock_policy = MockPolicy(failure_rate=args.rl_failure_rate)
+    if args.policy:
+        print(f"ONNX 策略: {args.policy}")
+        mock_policy = OnnxPolicy(args.policy)
+    else:
+        mock_policy = MockPolicy(failure_rate=args.rl_failure_rate)
 
     if args.mode == "pc":
         keyboard.active_requested = True
@@ -820,14 +983,36 @@ def main():
     print("键盘控制:")
     print("  A / Space  → 位置控制    B → 停用")
     print("  X          → RL 推理     Y → 位置控制")
+    print("  ↑ ↓        → 前进/后退   ← → → 左转/右转")
+    print("  0          → 停止移动")
     print("  Backspace  → 急停        Esc / Q → 退出")
     print("═" * 80)
     print()
+
+    # ── 日志 ──────────────────────────────────────────────────────────
+    logger = None
+    if args.log_dir:
+        # 相对于脚本仓库根目录
+        repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        if not os.path.isabs(args.log_dir):
+            log_dir = os.path.join(repo_root, args.log_dir)
+        else:
+            log_dir = args.log_dir
+        os.makedirs(log_dir, exist_ok=True)
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        mode_tag = args.mode
+        policy_tag = "onnx" if args.policy else "mock"
+        log_path = os.path.join(
+            log_dir, f"deploy_{mode_tag}_{policy_tag}_{timestamp}.csv"
+        )
+        logger = DeployLogger(log_path)
+        print(f"日志: {log_path}")
 
     controller = DeployController(
         sim=sim, config=config, keyboard=keyboard,
         mock_policy=mock_policy,
         static_vx=args.cmd[0], static_vy=args.cmd[1], static_yaw=args.cmd[2],
+        logger=logger,
     )
 
     start_time = time.time()
@@ -870,6 +1055,10 @@ def main():
     finally:
         sim_time = sim.data.time
         sim.close()
+        if logger is not None:
+            logger.close()
+            size_kb = os.path.getsize(log_path) / 1024
+            print(f"日志已保存: {log_path} ({size_kb:.1f} KB)")
         elapsed = time.time() - start_time
         print(
             f"\n仿真结束。运行 {elapsed:.1f}s, "

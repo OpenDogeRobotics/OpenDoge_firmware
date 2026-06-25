@@ -1,5 +1,12 @@
 # OpenDoge MuJoCo 仿真测试
 
+```bash
+cd /home/lain/OpenDoge/OpenDoge_firmware && python3 test/deploy_mujoco.py --mode idle
+```
+
+cd /home/lain/OpenDoge/OpenDoge_firmware && python3 test/deploy_mujoco.py --mode rl --policy policy/opendoge_r5.onnx
+
+
 ## 测试脚本
 
 | 脚本 | 用途 | 用法 |

@@ -1,6 +1,7 @@
 build/
 install/
 log/
+logs/
 .deps/
 
 __pycache__/
