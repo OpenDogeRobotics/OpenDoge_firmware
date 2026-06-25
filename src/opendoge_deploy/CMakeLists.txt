@@ -7,9 +7,14 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 option(OPENDOGE_ENABLE_ONNX "Build ONNX Runtime policy backend when headers/libs are available" ON)
 
 add_library(opendoge_deploy_core
+  src/cli.cpp
+  src/controller.cpp
   src/el05_socketcan.cpp
+  src/observer.cpp
   src/policy.cpp
   src/runtime_io.cpp
+  src/safety.cpp
+  src/status.cpp
 )
 
 target_include_directories(opendoge_deploy_core

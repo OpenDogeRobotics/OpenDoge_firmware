@@ -1,6 +1,8 @@
 <mujoco model="opendoge">
   <compiler angle="radian" meshdir="../meshes/" />
 
+  <option cone="elliptic" impratio="100" />
+
   <size njmax="500" nconmax="100" /><asset>
     <mesh name="base_link" file="base_link.STL" />
     <mesh name="FL_hip" file="FL_hip.STL" />

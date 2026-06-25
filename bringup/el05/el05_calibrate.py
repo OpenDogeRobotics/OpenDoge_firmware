@@ -23,16 +23,16 @@ Reference angles (from C++ defaultJointPosition / UniLab scene_flat.xml):
 Usage
 -----
   # Interactive (recommended for first calibration)
-  python3 tools/el05/el05_calibrate.py --channel can0
+  python3 bringup/el05/el05_calibrate.py --channel can0
 
   # Batch (robot already in standing pose)
-  python3 tools/el05/el05_calibrate.py --channel can0 --batch
+  python3 bringup/el05/el05_calibrate.py --channel can0 --batch
 
   # Verify existing calibration
-  python3 tools/el05/el05_calibrate.py --channel can0 --verify
+  python3 bringup/el05/el05_calibrate.py --channel can0 --verify
 
   # Dry-run (no CAN — validates logic)
-  python3 tools/el05/el05_calibrate.py --dry-run
+  python3 bringup/el05/el05_calibrate.py --dry-run
 
 Output is printed to stdout in key=value format ready to append to
 opendoge_deploy.conf.

@@ -15,13 +15,13 @@ sudo ./scripts/setup_can.sh can0 1000000
 From the workspace root:
 
 ```bash
-./tools/el05/el05_motor_menu.py --channel can0 --master-id 0xfd
+./bringup/el05/el05_motor_menu.py --channel can0 --master-id 0xfd
 ```
 
 Optional custom motor ID order:
 
 ```bash
-./tools/el05/el05_motor_menu.py --channel can0 --ids 1,2,3,4,5,6,7,8,9,10,11,12
+./bringup/el05/el05_motor_menu.py --channel can0 --ids 1,2,3,4,5,6,7,8,9,10,11,12
 ```
 
 ## Menu

@@ -8,10 +8,10 @@
 
 用法:
   # 从 IMU 状态文件读取（配合 dm_imu_bridge.py 使用）
-  ./tools/imu/imu_webviz.py --source file --file /tmp/opendoge_imu.state --port 8080
+  ./daemons/imu_bridge/imu_webviz.py --source file --file /tmp/opendoge_imu.state --port 8080
 
   # 直接从串口读取 IMU
-  ./tools/imu/imu_webviz.py --source serial --device /dev/ttyACM0 --baud 921600 --port 8080
+  ./daemons/imu_bridge/imu_webviz.py --source serial --device /dev/ttyACM0 --baud 921600 --port 8080
 
 然后在浏览器打开 http://<orange-pi-ip>:8080
 """

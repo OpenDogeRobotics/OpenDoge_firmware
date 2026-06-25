@@ -21,11 +21,13 @@ OpenDoge_firmware/
     start_robot.sh                 # 整机启动聚合脚本
   src/
     opendoge_deploy/               # 非 ROS 实机部署主程序
-  tools/
+  daemons/                         # 运行时 I/O 适配守护进程
+    imu_bridge/                     # DM-IMU-L1 bridge 守护进程
+    command_bridge/                 # Xbox 手柄 bridge 守护进程
+  bringup/                          # 硬件 bringup/标定/验证
     el05/                           # EL05/RobStride 交互式硬件工具
-    imu/                            # DM-IMU-L1 bridge 守护进程
-    joystick/                       # Xbox 手柄 bridge 守护进程
     usb2can/                        # USB2CAN 示例和参考说明
+  web_tools/                        # Web 控制台
   policy/                           # ONNX 强化学习策略模型
   build/ install/ log/              # colcon 生成，git 忽略
 ```
@@ -154,7 +156,7 @@ source install/setup.bash
 
 ```bash
 # 测试 IMU 数据读取（输出到终端和文件）
-python3 tools/imu/dm_imu_bridge.py \
+python3 daemons/imu_bridge/dm_imu_bridge.py \
   --source serial --device /dev/ttyACM0 --baud 921600 \
   --output /tmp/opendoge_imu_test.state
 # 新开终端查看输出：
@@ -168,7 +170,7 @@ cat /tmp/opendoge_imu_test.state
 如果 IMU 在另一设备（如 `/dev/ttyUSB0`），使用：
 
 ```bash
-python3 tools/imu/dm_imu_bridge.py \
+python3 daemons/imu_bridge/dm_imu_bridge.py \
   --source serial --device /dev/ttyUSB0 --baud 921600 \
   --output /tmp/opendoge_imu.state &
 ```
@@ -230,7 +232,7 @@ REALTIME_ARGS="--realtime --cpu 0"
 
 ```bash
 # 终端 1: 启动 IMU bridge
-python3 tools/imu/dm_imu_bridge.py \
+python3 daemons/imu_bridge/dm_imu_bridge.py \
   --source serial --device /dev/ttyACM0 --baud 921600 \
   --output /tmp/opendoge_imu_test.state &
 
@@ -314,7 +316,7 @@ src/opendoge_deploy/configs/imu.example
 Xbox 兼容手柄可以通过 joystick bridge 写入同一个命令文件：
 
 ```bash
-./tools/joystick/xbox_command_bridge.py \
+./daemons/command_bridge/xbox_command_bridge.py \
   --output /tmp/opendoge_command.state --require-rb
 
 ./install/opendoge_deploy/bin/opendoge_deploy \
@@ -327,7 +329,7 @@ Xbox 兼容手柄可以通过 joystick bridge 写入同一个命令文件：
 IMU bridge：
 
 ```bash
-./tools/imu/dm_imu_bridge.py \
+./daemons/imu_bridge/dm_imu_bridge.py \
   --device /dev/ttyACM0 --baud 921600 \
   --output /tmp/opendoge_imu.state
 ```
@@ -335,7 +337,7 @@ IMU bridge：
 如果 IMU 安装方向与训练坐标系不一致，通过轴映射修正：
 
 ```bash
-./tools/imu/dm_imu_bridge.py \
+./daemons/imu_bridge/dm_imu_bridge.py \
   --device /dev/ttyACM0 --baud 921600 \
   --axis-map xzy --axis-signs "1,-1,1" \
   --output /tmp/opendoge_imu.state
@@ -346,7 +348,7 @@ IMU bridge：
 EL05 协议打包自检：
 
 ```bash
-./tools/el05/protocol_selftest.py
+./bringup/el05/protocol_selftest.py
 ```
 
 vcan 测试 SocketCAN 打开和发送路径：

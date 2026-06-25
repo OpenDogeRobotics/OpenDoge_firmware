@@ -98,7 +98,7 @@ opendoge_deploy
 - 非 ROS 命令文件输入：`vx/vy/yaw_rate/active/estop`。
 - 非 ROS IMU 文件输入：`wx/wy/wz/gx/gy/gz`。
 - 配置化关节方向、零点 offset、软限位和 position target 限速。
-- 无硬件协议自检：`tools/el05/protocol_selftest.py`。
+- 无硬件协议自检：`bringup/el05/protocol_selftest.py`。
 - vcan 启动脚本：`scripts/setup_vcan.sh`。
 - 可选 ONNX Runtime 后端；未安装 ONNX Runtime 时仍可构建 dry-run 后端。
 

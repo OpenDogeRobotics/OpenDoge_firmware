@@ -30,13 +30,13 @@ cat /sys/class/input/js0/device/name    # 应显示 "Xbox Gamepad (userspace dri
 ### 2. 运行桥接
 
 ```bash
-./tools/joystick/xbox_command_bridge.py --require-rb
+./daemons/command_bridge/xbox_command_bridge.py --require-rb
 ```
 
 或使用启动器脚本（自动处理 xboxdrv）：
 
 ```bash
-./tools/joystick/start_joystick_bridge.sh --require-rb
+./daemons/command_bridge/start_joystick_bridge.sh --require-rb
 ```
 
 ### 3. 验证
@@ -163,7 +163,7 @@ ls -la /dev/input/js0
 cat /sys/class/input/js0/device/name
 
 # 3. 运行诊断工具
-./tools/joystick/diag_joystick.py
+./daemons/command_bridge/diag_joystick.py
 
 # 4. 检查桥接日志
 journalctl --user -u opendoge-joystick -n 50

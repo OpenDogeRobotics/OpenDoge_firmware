@@ -242,3 +242,110 @@ cd /home/lain/OpenDoge/OpenDoge_firmware/test
 python3 deploy_mujoco.py --policy ../policy/opendoge_r5.onnx --log-dir logs
 # 按 A (站立) → 等 2s 斜坡 → 按 X (RL 推理) → 按 ↑ 前进
 ```
+
+---
+
+## Round 2: 行走稳定性修复 (2026-06-25)
+
+Round 1 修复后机器人能站立但 RL 行走仍不如 UniLab pt play 稳定。
+CSV 日志分析与训练 XML/代码对比发现以下新 Gap。
+
+### Gap 9: Rate Limiter 限制关节目标速度
+
+**严重程度**: 🔴 致命
+
+#### 问题定位
+
+[deploy_mujoco.py](deploy_mujoco.py) `DeployController.step()` 目标计算块 (200Hz) 中，`rate_limit()` 将关节目标速度限制为 `MAX_POSITION_STEP = 0.015 rad/tick` = **3 rad/s**。
+
+CSV 日志数据证实：RL 推理期间 **90.9%** 的目标更新被 rate_limit 饱和：
+
+```
+Rate limit hits: 59001/64884 (90.9%)
+```
+
+| 管线 | 目标更新 |
+|------|----------|
+| 训练 `apply_action` | `ctrl = actions * action_scale + default_angles` — **瞬时到位** |
+| 部署 `DeployController.step` | `rate_limit(logical_target, limited_target, 0.015)` — **3 rad/s 平滑** |
+
+策略训练时没有 rate limiter，步态时序依赖瞬时目标切换。部署中大幅动作变化被 rate limiter 延迟 → 策略输出更大动作试图补偿 → rate limiter 进一步饱和 → 脚落地时机错位 → 支撑力不足 → 姿态失稳。
+
+**修复**: RL 模式下跳过 `rate_limit`，位置控制模式保留作为安全保护。
+
+---
+
+### Gap 10: 身体 Mesh 碰撞体与地面碰撞 ~~(已验证为错误假设)~~
+
+**严重程度**: ~~🔴 致命~~ → ⬜ 已排除
+
+#### 假设
+
+训练中身体碰撞 geom `conaffinity="2"` 不与地面碰撞（`conaffinity=2 & ground.contype=1 = 0`），而部署 body mesh 默认 `conaffinity="1"` 会与地面碰撞，产生额外阻力。
+
+#### 实验结论
+
+将 body mesh 统一设 `contype="0" conaffinity="0"` 后，机器人 base 直接穿透地面（z 降至 -0.09m），无法行走。原因是：
+
+- 训练中通过 `<contact>` 传感器**强制**检测脚-地接触，绕过 contype/conaffinity 限制
+- 部署中无 contact 传感器，必须依赖自然碰撞匹配（`conaffinity=1`）
+- 禁用 body mesh 碰撞后，身体完全失去碰撞检测，base 不受地面约束
+
+**结论**: body mesh 的 `conaffinity="1"` 是部署模型正常运行所必需的，不是 bug。训练模型的碰撞架构（contact 传感器强制配对）不同，不可直接类比。
+
+#### 不做修改
+
+保留 body mesh 默认碰撞行为（`contype="1" conaffinity="1"`）。
+
+---
+
+### Gap 10: 缺少 MuJoCo 物理选项
+
+**严重程度**: 🟡 中等
+
+| 属性 | 训练 (`opendoge.xml`) | 部署 (`Opendoge.xml`) |
+|------|----------------------|----------------------|
+| `cone` | `elliptic`（椭圆锥摩擦，更精确稳定）| 默认 `pyramidal`（棱锥摩擦）|
+| `impratio` | `100`（高求解器精度）| 默认 `1`（低精度）|
+
+**修复**: 在 `Opendoge.xml` 添加 `<option cone="elliptic" impratio="100" />`。
+
+> timestep 保留默认 0.002（部署控制频率 ~434Hz 与训练的 0.01 不同，统一会破坏实时比。训练通过多 substep 达到等效精度，部署高频单步本身已提供足够积分精度）。
+
+---
+
+## Round 2 修复清单
+
+| # | 文件 | 修改内容 |
+|---|------|----------|
+| 9 | `test/deploy_mujoco.py` | RL 模式跳过 `rate_limit`，目标瞬时切换 |
+| 10 | `docs/URDF/xml/Opendoge.xml` | 添加 `<option cone="elliptic" impratio="100" />` |
+
+---
+
+## Round 2 对齐后的最终状态
+
+| 项目 | 训练 | 部署 | 状态 |
+|------|------|------|:----:|
+| 观测维度 | 49 | 49 | ✅ |
+| projected_gravity | framequat 旋转 | framequat 旋转 | ✅ |
+| PD 刚度/阻尼 | kp=20, joint damping=0.5 | kp=20, joint damping=0.5 | ✅ |
+| joint frictionloss/armature | 0.2 / 0.01 | 0.2 / 0.01 | ✅ |
+| action_scale | 0.25 | 0.25 | ✅ |
+| 动作裁剪 | 无 | 无 | ✅ |
+| 脚部接触参数 | friction 0.4/0.02/0.01, solref 0.01 1, condim 6 | 同 | ✅ |
+| 相位 | `freq=1.2+1.3*cmd/0.6`, trot | 同 | ✅ |
+| DEFAULT_POS | `{0,0.5,-1.3}` / `{0,0.7,-1.3}` | 同 | ✅ |
+| 目标切换速度 | 瞬时 | ActiveRL 瞬时, 其他 rate_limit 3rad/s | ✅ |
+| 物理选项 | `cone=elliptic impratio=100` | `cone=elliptic impratio=100` | ✅ |
+
+---
+
+## 验证 (Round 2)
+
+```bash
+cd /home/lain/OpenDoge/OpenDoge_firmware/test
+python3 deploy_mujoco.py --policy ../policy/opendoge_r5.onnx --log-dir logs
+# 按 A (站立) → 等 2s 斜坡 → 按 X (RL 推理) → 按 ↑ 前进
+# 观察: 机器人应能持续稳定行走，不掉高、不震颤
+```

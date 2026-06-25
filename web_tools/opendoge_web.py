@@ -6,8 +6,8 @@ files, serves a single-page dashboard with live joint telemetry, IMU
 visualisation, and bidirectional command controls.
 
 Usage:
-  python3 tools/web/opendoge_web.py
-  python3 tools/web/opendoge_web.py --port 8080 --status-file /tmp/opendoge_status.json
+  python3 web_tools/opendoge_web.py
+  python3 web_tools/opendoge_web.py --port 8080 --status-file /tmp/opendoge_status.json
 
 Dependencies: Python 3.9+ standard library only (no pip installs).
 """

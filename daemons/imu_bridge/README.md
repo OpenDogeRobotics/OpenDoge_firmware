@@ -27,13 +27,13 @@ The deployment path uses the USB virtual serial active frame protocol:
 Configure the IMU to output gyro and quaternion frames, then run:
 
 ```bash
-./tools/imu/dm_imu_bridge.py --device /dev/ttyUSB0 --baud 921600 --output /tmp/opendoge_imu.state
+./daemons/imu_bridge/dm_imu_bridge.py --device /dev/ttyUSB0 --baud 921600 --output /tmp/opendoge_imu.state
 ```
 
 To configure the module through USB quick commands before reading:
 
 ```bash
-./tools/imu/dm_imu_bridge.py --device /dev/ttyUSB0 --baud 921600 --configure-usb --output /tmp/opendoge_imu.state
+./daemons/imu_bridge/dm_imu_bridge.py --device /dev/ttyUSB0 --baud 921600 --configure-usb --output /tmp/opendoge_imu.state
 ```
 
 Add `--check-crc` to validate USB serial CRC16 before accepting frames.
@@ -43,7 +43,7 @@ Add `--check-crc` to validate USB serial CRC16 before accepting frames.
 Use a SocketCAN interface dedicated to the IMU or a bus where ID collision is impossible:
 
 ```bash
-./tools/imu/dm_imu_bridge.py --source can --can can4 --can-id 0x01 --output /tmp/opendoge_imu.state
+./daemons/imu_bridge/dm_imu_bridge.py --source can --can can4 --can-id 0x01 --output /tmp/opendoge_imu.state
 ```
 
 ## Axis Alignment

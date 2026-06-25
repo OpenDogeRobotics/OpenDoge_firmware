@@ -8,7 +8,7 @@ Type=simple
 # Runs as the local user — xboxdrv must already provide /dev/input/js0.
 # Use opendoge-xboxdrv.service (system-level, see install_services.sh) to
 # auto-start xboxdrv on boot if needed.
-ExecStart=/usr/bin/python3 /home/orangepi/Opendoge/OpenDoge_firmware/tools/joystick/xbox_command_bridge.py \
+ExecStart=/usr/bin/python3 /home/orangepi/Opendoge/OpenDoge_firmware/daemons/command_bridge/xbox_command_bridge.py \
     --output /tmp/opendoge_command.state \
     --require-rb
 Restart=always

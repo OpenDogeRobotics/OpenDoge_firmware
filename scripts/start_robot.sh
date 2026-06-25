@@ -88,7 +88,7 @@ start_can() {
 
 start_imu_bridge() {
   if [[ -e "${IMU_DEVICE}" ]]; then
-    "${ROOT_DIR}/tools/imu/dm_imu_bridge.py" \
+    "${ROOT_DIR}/daemons/imu_bridge/dm_imu_bridge.py" \
       --device "${IMU_DEVICE}" \
       --baud 921600 \
       --configure-usb \
@@ -113,7 +113,7 @@ start_joystick_bridge() {
     args+=(--device "${JOYSTICK_DEVICE}")
   fi
   if compgen -G "/dev/input/js*" >/dev/null || [[ -n "${JOYSTICK_DEVICE}" ]]; then
-    "${ROOT_DIR}/tools/joystick/xbox_command_bridge.py" "${args[@]}" &
+    "${ROOT_DIR}/daemons/command_bridge/xbox_command_bridge.py" "${args[@]}" &
     PIDS+=("$!")
   else
     echo "Joystick not found, keeping inactive command file: ${COMMAND_FILE}" >&2
@@ -167,7 +167,7 @@ case "${MODE}" in
     CALIB_CHANNEL="${CALIB_CHANNEL:-can0}"
     start_can
     echo "Running motor calibration on ${CALIB_CHANNEL}..."
-    "${ROOT_DIR}/tools/el05/el05_calibrate.py" \
+    "${ROOT_DIR}/bringup/el05/el05_calibrate.py" \
       --channel "${CALIB_CHANNEL}" \
       --config "${CONFIG_FILE}" \
       | tee "${CALIB_OUTPUT}"

@@ -140,7 +140,7 @@ class DeployConfig:
     target_hz: float = 200.0
     control_hz: float = 1000.0
     kp: float = 20.0
-    kd: float = 0.0  # MuJoCo joint damping=0.5 handles velocity suppression
+    kd: float = 0.3  # 与训练配置一致 (OpenDoge ControlConfig)
     safe_kd: float = 2.0
     action_scale: float = 0.25
     pc_startup_ramp_s: float = 2.0
@@ -784,9 +784,13 @@ class DeployController:
                 tgt = DEFAULT_POS[i] + self.last_action[i] * config.action_scale
                 tgt = np.clip(tgt, JOINT_LOWER[i], JOINT_UPPER[i])
                 self.logical_target[i] = tgt
-                self.limited_target[i] = rate_limit(
-                    self.logical_target[i], self.limited_target[i], MAX_POSITION_STEP
-                )
+                # RL 模式跳过 rate_limit，策略训练时目标瞬时切换，无平滑延迟
+                if self.runtime_state == RuntimeState.ActiveRL:
+                    self.limited_target[i] = tgt
+                else:
+                    self.limited_target[i] = rate_limit(
+                        self.logical_target[i], self.limited_target[i], MAX_POSITION_STEP
+                    )
 
         # --- 控制块 (1000 Hz) — 每步都执行 ---
         is_active = self.runtime_state in (RuntimeState.ActivePC, RuntimeState.ActiveRL)
