@@ -707,13 +707,20 @@ def cmd_set_can_id(bus: El05Bus, motors: list[tuple[str, int]], channel: str = "
     if pos is not None:
         print(f"  位置: {pos:+.4f} rad")
 
-    # 建议新 ID
+    # 建议新 ID (基于通道)
     channel_targets = {"can0": (1,2,3), "can1": (4,5,6), "can2": (7,8,9), "can3": (10,11,12)}
     suggested = channel_targets.get(channel, (1, 2, 3))
-    # 从建议列表中排除已在线的标准ID
-    already_used = [mid for mid in suggested if mid in {m[1] for m in motors} and mid != old_id]
-    available = [t for t in suggested if t not in already_used or t == old_id]
-    default_new = available[0]
+    # 重新扫描总线, 获取当前实际在线电机 (排除当前电机自身)
+    bus.drain()
+    online_now = bus.discover(timeout=1.0)
+    already_used = [mid for mid in suggested if mid in online_now and mid != old_id]
+    available = [t for t in suggested if t not in already_used]
+    if available:
+        default_new = available[0]
+    else:
+        # 所有建议 ID 都已被占用, 回退到第一个建议 ID
+        print(f"  ⚠️ 通道 {channel} 建议 ID {suggested} 均已在线, 默认使用 {suggested[0]}")
+        default_new = suggested[0]
 
     print(f"  通道 {channel} 建议 ID: {suggested}")
     new_id_str = input(f"  新 CAN ID [{default_new}] (q=退出): ").strip()
