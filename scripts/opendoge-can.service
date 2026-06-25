@@ -1,0 +1,42 @@
+[Unit]
+Description=OpenDoge CAN Interface Setup (can0-3)
+Documentation=https://github.com/Lain-Ego/OpenDoge_firmware
+# Wait until USB subsystem is ready (CANable adapters are USB)
+After=multi-user.target
+Wants=multi-user.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+
+# Load kernel modules
+ExecStartPre=-/sbin/modprobe gs_usb
+ExecStartPre=-/sbin/modprobe can
+ExecStartPre=-/sbin/modprobe can_raw
+
+# Wait up to 15s for all 4 CAN interfaces to appear (USB enumeration)
+ExecStartPre=/bin/sh -c 'for i in $$(seq 1 30); do \
+    [ -e /sys/class/net/can0 ] && [ -e /sys/class/net/can1 ] && \
+    [ -e /sys/class/net/can2 ] && [ -e /sys/class/net/can3 ] && exit 0; \
+    sleep 0.5; \
+done; \
+missing=""; \
+for iface in can0 can1 can2 can3; do \
+    [ -e /sys/class/net/$${iface} ] || missing="$${missing} $${iface}"; \
+done; \
+echo "CAN interfaces not found after 15s:$${missing} (check USB-CAN adapters)" >&2; \
+exit 1'
+
+# Bring up all 4 CAN interfaces at 1 Mbps
+ExecStart=/bin/sh -c 'for iface in can0 can1 can2 can3; do \
+    ip link set down $${iface} 2>/dev/null || true; \
+    ip link set $${iface} type can bitrate 1000000 loopback off; \
+    ip link set up $${iface}; \
+    echo "$${iface} up at 1000000 bps"; \
+done'
+
+# Keep interfaces up on restart (avoid flap)
+ExecStop=/bin/true
+
+[Install]
+WantedBy=multi-user.target

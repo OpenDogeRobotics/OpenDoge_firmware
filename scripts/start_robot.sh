@@ -13,15 +13,29 @@ CONFIG_FILE="${CONFIG_FILE:-${ROOT_DIR}/src/opendoge_deploy/configs/opendoge_dep
 DEPLOY_BIN="${DEPLOY_BIN:-${ROOT_DIR}/install/opendoge_deploy/bin/opendoge_deploy}"
 POLICY_BACKEND="${POLICY_BACKEND:-onnx}"
 POLICY_PATH="${POLICY_PATH:-}"
-IMU_DEVICE="${IMU_DEVICE:-/dev/ttyUSB0}"
-JOYSTICK_DEVICE="${JOYSTICK_DEVICE:-}"
 REALTIME_ARGS="${REALTIME_ARGS:-}"
-
-PIDS=()
+CALIB_OUTPUT="${CALIB_OUTPUT:-/tmp/opendoge_calibration.conf}"
+CALIB_CHANNEL="${CALIB_CHANNEL:-can0}"
 
 usage() {
   cat <<EOF
-Usage: $0 [dry|damping|policy|calibrate|low-gain]
+Usage: $0 [dry|damping|policy|calibrate|low-gain|verify]
+
+Modes:
+  dry         Dry-run deploy (no hardware, no policy, 2s)
+  damping     Real deploy with PD damping (no policy)
+  policy      Real deploy with ONNX policy inference
+  low-gain    Real deploy, low-gain static standing test
+  calibrate   Motor calibration on a single CAN channel
+  verify      Check all services and interfaces are ready, then exit
+
+Prerequisites:
+  CAN interfaces (can0-3): managed by opendoge-can.service
+  IMU bridge:              managed by opendoge-imu.service (user)
+  Joystick bridge:         managed by opendoge-joystick.service (user)
+  Xbox driver:             managed by opendoge-xboxdrv.service
+
+  Install all services once with: bash scripts/install_services.sh
 
 Environment:
   CAN_IFACES       CAN interfaces, default: "can0 can1 can2 can3"
@@ -31,23 +45,11 @@ Environment:
   CONFIG_FILE      deploy config path
   POLICY_PATH      ONNX path, required for policy mode
   POLICY_BACKEND   policy backend, default: onnx
-  IMU_DEVICE       DM-IMU serial device, default: /dev/ttyUSB0
-  JOYSTICK_DEVICE  optional /dev/input/js* device
-  REALTIME_ARGS    optional deploy realtime args, for example: "--realtime --cpu 0"
+  REALTIME_ARGS    optional deploy realtime args, e.g. "--realtime --cpu 0"
   CALIB_OUTPUT     calibration output path, default: /tmp/opendoge_calibration.conf
   CALIB_CHANNEL    CAN channel for calibration, default: can0
 EOF
 }
-
-cleanup() {
-  local pid
-  for pid in "${PIDS[@]}"; do
-    if kill -0 "${pid}" 2>/dev/null; then
-      kill "${pid}" 2>/dev/null || true
-    fi
-  done
-}
-trap cleanup EXIT INT TERM
 
 require_file() {
   local path="$1"
@@ -60,7 +62,9 @@ require_file() {
 
 write_safe_command() {
   mkdir -p "$(dirname "${COMMAND_FILE}")" "$(dirname "${IMU_FILE}")"
-  cat >"${COMMAND_FILE}" <<EOF
+  # Only seed files if they don't exist (services may already have written real data)
+  if [[ ! -s "${COMMAND_FILE}" ]]; then
+    cat >"${COMMAND_FILE}" <<EOF
 vx=0.0
 vy=0.0
 yaw_rate=0.0
@@ -69,7 +73,9 @@ estop=false
 clear_fault=false
 low_gain_mode=false
 EOF
-  cat >"${IMU_FILE}" <<EOF
+  fi
+  if [[ ! -s "${IMU_FILE}" ]]; then
+    cat >"${IMU_FILE}" <<EOF
 wx=0.0
 wy=0.0
 wz=0.0
@@ -77,46 +83,80 @@ gx=0.0
 gy=0.0
 gz=-1.0
 EOF
+  fi
 }
 
-start_can() {
+verify_can() {
+  local ok=true
   local iface
   for iface in ${CAN_IFACES}; do
-    sudo "${ROOT_DIR}/scripts/setup_can.sh" "${iface}" "${CAN_BITRATE}"
+    if ! ip link show "${iface}" &>/dev/null; then
+      echo "  ✗ ${iface} does not exist (check USB-CAN adapters)" >&2
+      ok=false
+    elif ip link show "${iface}" | grep -q "state UP"; then
+      echo "  ✓ ${iface} UP"
+    else
+      echo "  ✗ ${iface} exists but is DOWN — restart with: sudo systemctl restart opendoge-can" >&2
+      ok=false
+    fi
   done
+  if ! ${ok}; then
+    echo ""
+    echo "Troubleshooting:" >&2
+    echo "  sudo systemctl status opendoge-can" >&2
+    echo "  sudo journalctl -u opendoge-can -n 20" >&2
+    echo "  lsusb | grep 1d50:606f     # should show 4 CANable adapters" >&2
+    return 1
+  fi
+  return 0
 }
 
-start_imu_bridge() {
-  if [[ -e "${IMU_DEVICE}" ]]; then
-    "${ROOT_DIR}/daemons/imu_bridge/dm_imu_bridge.py" \
-      --device "${IMU_DEVICE}" \
-      --baud 921600 \
-      --configure-usb \
-      --output "${IMU_FILE}" &
-    PIDS+=("$!")
+verify_service() {
+  local service="$1"
+  local manager="$2"  # "system" or "user"
+  local label="$3"
+
+  if [[ "${manager}" == "user" ]]; then
+    if systemctl --user is-active --quiet "${service}" 2>/dev/null; then
+      echo "  ✓ ${label} (${service}) active"
+      return 0
+    else
+      echo "  ✗ ${label} (${service}) not running — restart with: systemctl --user restart ${service}" >&2
+      return 1
+    fi
   else
-    echo "IMU device not found, using initial ${IMU_FILE}: ${IMU_DEVICE}" >&2
+    if systemctl is-active --quiet "${service}" 2>/dev/null; then
+      echo "  ✓ ${label} (${service}) active"
+      return 0
+    else
+      echo "  ✗ ${label} (${service}) not running — restart with: sudo systemctl restart ${service}" >&2
+      return 1
+    fi
   fi
 }
 
-start_joystick_bridge() {
-  # If the systemd service is already managing the bridge, skip.
-  if systemctl --user is-active --quiet opendoge-joystick 2>/dev/null \
-     || systemctl is-active --quiet opendoge-joystick 2>/dev/null; then
-    echo "Joystick bridge already running via systemd (opendoge-joystick.service)"
+verify_all() {
+  local all_ok=true
+
+  echo "Verifying services and interfaces ..."
+  echo ""
+
+  echo "CAN interfaces:"
+  verify_can || all_ok=false
+
+  echo ""
+  echo "Daemon services:"
+  verify_service "opendoge-xboxdrv" "system" "Xbox driver" || all_ok=false
+  verify_service "opendoge-joystick" "user" "Joystick bridge" || all_ok=false
+  verify_service "opendoge-imu" "user" "IMU bridge" || all_ok=false
+
+  echo ""
+  if ${all_ok}; then
+    echo "✓ All services ready."
     return 0
-  fi
-
-  # Fallback: launch the bridge directly (backward compatibility).
-  local args=(--output "${COMMAND_FILE}" --require-rb)
-  if [[ -n "${JOYSTICK_DEVICE}" ]]; then
-    args+=(--device "${JOYSTICK_DEVICE}")
-  fi
-  if compgen -G "/dev/input/js*" >/dev/null || [[ -n "${JOYSTICK_DEVICE}" ]]; then
-    "${ROOT_DIR}/daemons/command_bridge/xbox_command_bridge.py" "${args[@]}" &
-    PIDS+=("$!")
   else
-    echo "Joystick not found, keeping inactive command file: ${COMMAND_FILE}" >&2
+    echo "✗ Some services are not ready. See above for restart commands." >&2
+    return 1
   fi
 }
 
@@ -137,35 +177,39 @@ case "${MODE}" in
   -h|--help|help)
     usage
     ;;
+
+  verify)
+    verify_all
+    ;;
+
   dry)
     write_safe_command
     run_deploy --policy-backend none --duration-sec 2
     ;;
+
   damping)
+    verify_all
     write_safe_command
-    start_can
-    start_imu_bridge
-    start_joystick_bridge
     run_deploy --real --enable --clear-fault --policy-backend none
     ;;
+
   policy)
     if [[ -z "${POLICY_PATH}" ]]; then
       echo "POLICY_PATH is required in policy mode" >&2
       exit 1
     fi
     require_file "${POLICY_PATH}" "policy"
+    verify_all
     write_safe_command
-    start_can
-    start_imu_bridge
-    start_joystick_bridge
     run_deploy --real --enable --clear-fault \
       --policy-backend "${POLICY_BACKEND}" \
       --policy-path "${POLICY_PATH}"
     ;;
+
   calibrate)
-    CALIB_OUTPUT="${CALIB_OUTPUT:-/tmp/opendoge_calibration.conf}"
-    CALIB_CHANNEL="${CALIB_CHANNEL:-can0}"
-    start_can
+    echo "Verifying CAN interfaces ..."
+    verify_can
+    echo ""
     echo "Running motor calibration on ${CALIB_CHANNEL}..."
     "${ROOT_DIR}/bringup/el05/el05_calibrate.py" \
       --channel "${CALIB_CHANNEL}" \
@@ -175,8 +219,9 @@ case "${MODE}" in
     echo "Calibration written to ${CALIB_OUTPUT}"
     echo "Append its contents to ${CONFIG_FILE} before running damping or policy mode."
     ;;
+
   low-gain)
-    write_safe_command
+    verify_all
     # Pre-write low_gain_mode so the state machine enters LowGainTest directly
     # after motors are ready (no policy, reduced gains, static standing pose).
     cat >"${COMMAND_FILE}" <<EOF
@@ -188,12 +233,10 @@ estop=false
 clear_fault=false
 low_gain_mode=true
 EOF
-    start_can
-    start_imu_bridge
-    start_joystick_bridge
     run_deploy --real --enable --clear-fault --policy-backend none
     echo "Low-gain mode exited. Use BACK button on joystick to toggle low_gain_mode."
     ;;
+
   *)
     echo "Unknown mode: ${MODE}" >&2
     usage >&2

@@ -100,13 +100,18 @@ Orange Pi 5 → USB 2.0 Hub (带外部供电) → 4× CANable (gs_usb, candleLig
 | CAN 接口数 | 4 (can0-can3) |
 | 供电 | **USB Hub 必须带外部供电** (Orange Pi 5 供电不足) |
 
-启动 CAN 接口：
+CAN 接口由 `opendoge-can.service` (system oneshot) 在开机时自动配置。手动管理：
+```bash
+sudo systemctl status opendoge-can              # 查看状态
+sudo systemctl restart opendoge-can             # 重新配置 4 个 CAN 口
+sudo journalctl -u opendoge-can -n 20           # 查看最近日志
+```
+
+底层手动命令 (通常不需要，用 systemd 即可)：
 ```bash
 sudo modprobe gs_usb can can_raw
 sudo ./scripts/setup_can.sh can0 1000000
-sudo ./scripts/setup_can.sh can1 1000000
-sudo ./scripts/setup_can.sh can2 1000000
-sudo ./scripts/setup_can.sh can3 1000000
+# ... can1-3 同理
 ```
 
 只读扫描全部电机 (不使能、不写参数)：
@@ -152,13 +157,25 @@ gyro(3) + neg_gravity(3) + dof_pos_diff(12) + dof_vel(12)
 + last_action(12) + commands(3) + feet_phase(4)
 ```
 
-## Daemons 与 deploy 的接口
+## systemd 服务架构
 
-`opendoge_deploy` 不直接操作硬件。IMU 和手柄通过 `daemons/` 中的 Python 守护进程桥接为文件 IPC：
+所有硬件 I/O 守护进程和 CAN 接口均由 systemd 管理，开机自启。`opendoge_deploy` 不直接操作硬件，通过文件 IPC 读取数据。
 
 ```
-daemons/imu_bridge/dm_imu_bridge.py           → /tmp/opendoge_imu.state
-daemons/command_bridge/xbox_command_bridge.py → /tmp/opendoge_command.state
+系统服务 (root, 开机自启):
+  opendoge-can.service       → 配置 can0-3 @ 1 Mbps (oneshot)
+  opendoge-xboxdrv.service   → xboxdrv → /dev/input/js0
+
+用户服务 (linger, 开机自启):
+  opendoge-imu.service       → dm_imu_bridge.py → /tmp/opendoge_imu.state
+  opendoge-joystick.service  → xbox_command_bridge.py → /tmp/opendoge_command.state
+```
+
+服务依赖链：
+```
+opendoge-can (can0-3 UP)
+opendoge-xboxdrv → /dev/input/js0 → opendoge-joystick → /tmp/opendoge_command.state
+opendoge-imu (auto-detect /dev/ttyUSBx by USB ID 6877:4d55) → /tmp/opendoge_imu.state
 ```
 
 C++ deploy 通过 `runtime_io.cpp` 的 `readImuFile()` / `readCommandFile()` 以 200 Hz 轮询这些文件。这是有意设计：
@@ -166,22 +183,30 @@ C++ deploy 通过 `runtime_io.cpp` 的 `readImuFile()` / `readCommandFile()` 以
 - 守护进程可独立重启
 - dry-run 测试可直接写入文件注入假数据
 
+**一键安装所有服务：**
+```bash
+bash scripts/install_services.sh
+```
+
 ### DM-IMU-L1 状态
 
 | 属性 | 值 |
 |------|-----|
 | 硬件 | DM-Tech DM-IMU-L1 |
 | USB ID | `6877:4d55` |
-| 串口 | `/dev/ttyUSBx` (自动检测) |
+| 串口 | `/dev/ttyUSBx` (自动检测, 服务启动时根据 USB ID 查找) |
 | 桥接脚本 | `daemons/imu_bridge/dm_imu_bridge.py` |
+| systemd 服务 | `opendoge-imu.service` (用户服务, Restart=always) |
 | 输出文件 | `/tmp/opendoge_imu.state` |
 | 数据格式 | `wx wy wz gx gy gz` (角速度 rad/s, projected gravity 已取反) |
 | 当前状态 | ✅ 正常运行, `gz ≈ -1.0` (竖直), gyro 噪声 < 0.02 rad/s |
 
 验证命令：
 ```bash
-cat /tmp/opendoge_imu.state       # 查看实时 IMU 数据
-lsusb | grep 6877:4d55             # 确认 IMU 已连接
+cat /tmp/opendoge_imu.state                        # 查看实时 IMU 数据
+systemctl --user status opendoge-imu               # IMU bridge 状态
+journalctl --user -u opendoge-imu -f               # IMU bridge 实时日志
+lsusb | grep 6877:4d55                              # 确认 IMU 已连接
 ```
 
 ### Xbox 2.4G 手柄状态
@@ -216,6 +241,8 @@ lsusb | grep 6877:4d55             # 确认 IMU 已连接
 ```
 opendoge-xboxdrv.service   (system) → xboxdrv, Type=simple, Restart=always
 opendoge-joystick.service  (user)   → bridge, Type=simple, Restart=always
+opendoge-imu.service       (user)   → DM-IMU-L1 bridge, Type=simple, Restart=always
+opendoge-can.service       (system) → CAN interface setup, Type=oneshot
 ```
 
 服务链：`opendoge-xboxdrv` → `/dev/input/js0` → `opendoge-joystick` → `/tmp/opendoge_command.state`
@@ -223,16 +250,30 @@ opendoge-joystick.service  (user)   → bridge, Type=simple, Restart=always
 **稳定性机制**:
 - xboxdrv 崩溃 → systemd `Restart=always`, 5s 后自动拉起
 - js0 消失 → bridge 捕获 `DeviceLostError`, 写安全中性命令, 自动重连
-- USB 热插拔 → `ExecStartPre` 等待 dongle/js0 出现 (最多 30s)
+- IMU 串口断开 → bridge 内建重连逻辑 + systemd `Restart=always`, 3s 后自动拉起
+- USB 热插拔 → `ExecStartPre` 等待硬件出现 (最多 15-30s)
 - 无限重启次数 (`StartLimitIntervalSec=0`)
 
 日常管理：
 ```bash
-systemctl status opendoge-xboxdrv              # xboxdrv 状态
-systemctl --user status opendoge-joystick      # bridge 状态
-journalctl --user -u opendoge-joystick -f      # bridge 实时日志
-watch -n 0.2 cat /tmp/opendoge_command.state   # 监控手柄命令
-sudo journalctl -u opendoge-xboxdrv -f         # xboxdrv 实时日志
+# CAN 接口
+systemctl status opendoge-can                     # CAN 状态
+sudo journalctl -u opendoge-can -n 20             # CAN 最近日志
+
+# Xbox 手柄
+systemctl status opendoge-xboxdrv                 # xboxdrv 状态
+systemctl --user status opendoge-joystick         # bridge 状态
+journalctl --user -u opendoge-joystick -f         # bridge 实时日志
+watch -n 0.2 cat /tmp/opendoge_command.state      # 监控手柄命令
+sudo journalctl -u opendoge-xboxdrv -f            # xboxdrv 实时日志
+
+# IMU
+systemctl --user status opendoge-imu              # IMU bridge 状态
+journalctl --user -u opendoge-imu -f              # IMU bridge 实时日志
+watch -n 0.2 cat /tmp/opendoge_imu.state          # 监控 IMU 数据
+
+# 一键检查所有服务
+bash scripts/start_robot.sh verify
 ```
 
 安装/重装：

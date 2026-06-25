@@ -1,0 +1,53 @@
+[Unit]
+Description=OpenDoge DM-IMU-L1 Bridge
+Documentation=https://github.com/Lain-Ego/OpenDoge_firmware
+After=default.target
+# CAN service must finish before IMU if IMU uses CAN source (serial source doesn't need it)
+# After=opendoge-can.service only applies for system services; user service can't depend on it.
+# For serial-source IMU this is fine — only USB serial is needed.
+
+[Service]
+Type=simple
+
+# Find the DM-IMU-L1 ttyUSB device (USB ID 6877:4d55) and write the path to a temp file.
+# Waits up to 15s for the device to appear.
+ExecStartPre=/bin/sh -c ' \
+for i in $$(seq 1 30); do \
+    for dev in /dev/ttyUSB*; do \
+        [ -e "$$dev" ] || continue; \
+        devname=$$(basename "$$dev"); \
+        vid=$$(cat /sys/class/tty/$$devname/device/../idVendor 2>/dev/null || true); \
+        pid=$$(cat /sys/class/tty/$$devname/device/../idProduct 2>/dev/null || true); \
+        if [ "$$vid" = "6877" ] && [ "$$pid" = "4d55" ]; then \
+            echo "$$dev" > /tmp/opendoge_imu_device; \
+            echo "Found DM-IMU-L1 at $$dev ($$vid:$$pid)"; \
+            exit 0; \
+        fi; \
+    done; \
+    sleep 0.5; \
+done; \
+echo "DM-IMU-L1 (6877:4d55) not found after 15s" >&2; \
+exit 1'
+
+# Launch the bridge. --configure-usb sends output-format quick-commands each start (safe to re-send).
+# The bridge handles its own reconnection logic if the serial device drops.
+ExecStart=/bin/sh -c ' \
+device=$$(cat /tmp/opendoge_imu_device 2>/dev/null || echo "/dev/ttyUSB0"); \
+exec /usr/bin/python3 /home/orangepi/Opendoge/OpenDoge_firmware/daemons/imu_bridge/dm_imu_bridge.py \
+    --source serial \
+    --device "$$device" \
+    --baud 921600 \
+    --configure-usb \
+    --output /tmp/opendoge_imu.state'
+
+# Always restart on crash (bridge has internal age/timeout warnings but no fatal-exit on transient errors)
+Restart=always
+RestartSec=3
+StartLimitIntervalSec=0
+TimeoutStartSec=45
+
+# Clean up device path temp file
+ExecStopPost=-/bin/rm -f /tmp/opendoge_imu_device
+
+[Install]
+WantedBy=default.target
