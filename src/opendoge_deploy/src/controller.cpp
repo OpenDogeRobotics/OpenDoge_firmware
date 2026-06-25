@@ -44,7 +44,6 @@ void updateStateMachine(
   const Options & opt,
   const std::array<MotorState, kNumJoints> & states,
   const DeployConfig & config,
-  const SafetyConfig & safety,
   const ImuSample & imu,
   double t,
   double & pc_startup_start_s,
@@ -61,10 +60,10 @@ void updateStateMachine(
     if (allFeedbackReceived(states)) {
       runtime_state = RuntimeState::Ready;
       feedback_wait_start_s = 0.0;
-    } else if (safety.feedback_wait_timeout_s > 0.0) {
+    } else if (config.feedback_wait_timeout_s > 0.0) {
       if (feedback_wait_start_s == 0.0) {
         feedback_wait_start_s = t;
-      } else if (t - feedback_wait_start_s > safety.feedback_wait_timeout_s) {
+      } else if (t - feedback_wait_start_s > config.feedback_wait_timeout_s) {
         fault_reason = "feedback wait timeout after " + std::to_string(t - feedback_wait_start_s) + "s";
         runtime_state = RuntimeState::DampingFault;
         return;

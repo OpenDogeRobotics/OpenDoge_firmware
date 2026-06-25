@@ -71,7 +71,7 @@ bool safetyFault(
   const std::array<MotorState, kNumJoints> & states,
   const std::array<JointMap, kNumJoints> & joints,
   const std::array<JointCalibration, kNumJoints> & calibration,
-  const SafetyConfig & safety,
+  const DeployConfig & config,
   RuntimeState runtime_state,
   const std::array<double, kNumJoints> & logical_target,
   const ImuSample & imu,
@@ -85,7 +85,7 @@ bool safetyFault(
       reason = joints[i].name + ": missing feedback";
       return true;
     }
-    if (now_s - states[i].last_feedback_s > safety.state_timeout_s) {
+    if (now_s - states[i].last_feedback_s > config.state_timeout_s) {
       reason = joints[i].name + ": feedback timeout";
       return true;
     }
@@ -99,31 +99,31 @@ bool safetyFault(
         hexValue(states[i].param_fault, 8) + " [" + describeBits(states[i].param_fault) + "]";
       return true;
     }
-    if (states[i].temperature >= safety.over_temperature_c) {
+    if (states[i].temperature >= config.over_temperature_c) {
       reason = joints[i].name + ": over temperature";
       return true;
     }
     // Early temperature warning (once per joint per threshold crossing)
     static std::array<bool, kNumJoints> temp_warned{};
-    if (states[i].temperature >= safety.temp_warn_c &&
-        states[i].temperature < safety.over_temperature_c &&
+    if (states[i].temperature >= config.temp_warn_c &&
+        states[i].temperature < config.over_temperature_c &&
         !temp_warned[i]) {
       std::cerr << "Warning: " << joints[i].name << " temperature "
-                << states[i].temperature << " C (limit " << safety.over_temperature_c << ")\n";
+                << states[i].temperature << " C (limit " << config.over_temperature_c << ")\n";
       temp_warned[i] = true;
     }
-    if (states[i].temperature < safety.temp_warn_c - 5.0) {
+    if (states[i].temperature < config.temp_warn_c - 5.0) {
       temp_warned[i] = false;  // reset when temperature drops
     }
 
     // ── sustained torque monitoring ──
     const double max_torque_val = calibration[i].max_torque > 0.0
-      ? calibration[i].max_torque : safety.torque_threshold;
+      ? calibration[i].max_torque : config.torque_threshold;
     const double abs_torque = std::abs(states[i].torque);
     if (abs_torque > max_torque_val) {
       if (safety_state[i].torque_exceeded_since_s == 0.0) {
         safety_state[i].torque_exceeded_since_s = now_s;
-      } else if (now_s - safety_state[i].torque_exceeded_since_s > safety.torque_timeout_s) {
+      } else if (now_s - safety_state[i].torque_exceeded_since_s > config.torque_timeout_s) {
         reason = joints[i].name + ": torque " + std::to_string(abs_torque)
           + " Nm > " + std::to_string(max_torque_val) + " Nm for "
           + std::to_string(now_s - safety_state[i].torque_exceeded_since_s) + "s";
@@ -140,12 +140,12 @@ bool safetyFault(
         || runtime_state == RuntimeState::LowGainTest) {
       const double logical_actual = logicalPosition(states[i].position, calibration[i]);
       const double error = std::abs(logical_target[i] - logical_actual);
-      if (error > safety.tracking_error_threshold) {
+      if (error > config.tracking_error_threshold) {
         if (safety_state[i].tracking_error_since_s == 0.0) {
           safety_state[i].tracking_error_since_s = now_s;
-        } else if (now_s - safety_state[i].tracking_error_since_s > safety.tracking_error_timeout_s) {
+        } else if (now_s - safety_state[i].tracking_error_since_s > config.tracking_error_timeout_s) {
           reason = joints[i].name + ": tracking error " + std::to_string(error)
-            + " rad > " + std::to_string(safety.tracking_error_threshold) + " rad for "
+            + " rad > " + std::to_string(config.tracking_error_threshold) + " rad for "
             + std::to_string(now_s - safety_state[i].tracking_error_since_s) + "s";
           return true;
         }
@@ -160,12 +160,12 @@ bool safetyFault(
   static double fall_imu_invalid_since_s = 0.0;
   if (imu.valid) {
     fall_imu_invalid_since_s = 0.0;
-    if (imu.projected_gravity[2] < safety.fall_gravity_z_threshold) {
+    if (imu.projected_gravity[2] < config.fall_gravity_z_threshold) {
       if (fall_since_s == 0.0) {
         fall_since_s = now_s;
-      } else if (now_s - fall_since_s > safety.fall_timeout_s) {
+      } else if (now_s - fall_since_s > config.fall_timeout_s) {
         reason = "fall detected: gravity.z=" + std::to_string(imu.projected_gravity[2])
-          + " < " + std::to_string(safety.fall_gravity_z_threshold);
+          + " < " + std::to_string(config.fall_gravity_z_threshold);
         return true;
       }
     } else {

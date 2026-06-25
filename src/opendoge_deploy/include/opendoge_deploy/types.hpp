@@ -50,29 +50,28 @@ struct CanStats
   std::uint64_t write_errors{0};
 };
 
-struct SafetyConfig
+/// Per-joint safety state for sustained-condition monitoring.
+/// Timers reset when condition clears; a fault is raised only when
+/// the condition persists beyond the configured timeout.
+struct JointSafetyState
 {
-  double state_timeout_s{0.02};
-  double over_temperature_c{80.0};
-  double safe_kd{2.0};
-  // Sustained torque exceedance monitoring
-  double torque_threshold{3.0};
-  double torque_timeout_s{0.5};
-  // Joint tracking error monitoring
-  double tracking_error_threshold{0.5};
-  double tracking_error_timeout_s{0.3};
-  // Stale command file detection
-  double command_timeout_s{0.5};
-  // IMU-based fall detection
-  double fall_gravity_z_threshold{0.3};
-  double fall_timeout_s{0.3};
-  // WaitFeedback overall timeout (5s default; 0 = no timeout)
-  double feedback_wait_timeout_s{5.0};
-  // Early temperature warning threshold (C)
-  double temp_warn_c{65.0};
-  // IMU consecutive invalid reads before dropping to Ready (debounce)
-  int imu_debounce_count{10};
+  double torque_exceeded_since_s{0.0};
+  double tracking_error_since_s{0.0};
 };
+
+enum class RuntimeState
+{
+  WaitFeedback,
+  Ready,
+  EnteringPosition,
+  ActivePC,
+  ActiveRL,
+  LowGainTest,
+  DampingFault,
+};
+
+/// Human-readable name for RuntimeState enum values (used in status output).
+const char * stateName(RuntimeState state);
 
 struct JointCalibration
 {

@@ -4,7 +4,6 @@
 #include <cstdint>
 #include <string>
 
-#include "opendoge_deploy/safety.hpp"
 #include "opendoge_deploy/types.hpp"
 
 namespace opendoge

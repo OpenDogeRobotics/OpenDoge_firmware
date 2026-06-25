@@ -5,7 +5,6 @@
 
 #include "opendoge_deploy/cli.hpp"
 #include "opendoge_deploy/el05_socketcan.hpp"
-#include "opendoge_deploy/safety.hpp"
 #include "opendoge_deploy/types.hpp"
 
 namespace opendoge
@@ -32,7 +31,6 @@ void updateStateMachine(
   const Options & opt,
   const std::array<MotorState, kNumJoints> & states,
   const DeployConfig & config,
-  const SafetyConfig & safety,
   const ImuSample & imu,
   double t,
   double & pc_startup_start_s,

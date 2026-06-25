@@ -349,3 +349,163 @@ python3 deploy_mujoco.py --policy ../policy/opendoge_r5.onnx --log-dir logs
 # 按 A (站立) → 等 2s 斜坡 → 按 X (RL 推理) → 按 ↑ 前进
 # 观察: 机器人应能持续稳定行走，不掉高、不震颤
 ```
+
+---
+
+## Round 3: C++/Python 控制回路对齐 + 配置去重 (2026-06-25)
+
+Round 2 后 C++ 固件已模块化 (`controller.cpp`, `observer.cpp`, `safety.cpp`),
+但 Python `deploy_mujoco.py` 仍有多处与 C++ 控制回路不一致的逻辑。
+
+### Gap 11: Python build_observation 对速度额外缩放 0.5
+
+**严重程度**: 🔴 致命
+
+Python `build_observation()` 对 `joint_velocities * 0.5`,但 C++ `observer.cpp`
+直接使用原始速度 (`logicalVelocity` = `direction * motor_velocity`)。训练观测中
+也没有这个 0.5 缩放。
+
+**修复**: 移除 `* 0.5`,j velocities 直接写入 obs[18:30]。
+
+### Gap 12: LowGainTest 状态缺失
+
+**严重程度**: 🟡 中等
+
+C++ `RuntimeState` 有 `LowGainTest` 状态 (30% PD 增益, 保持 DEFAULT_POS),
+Python 完全缺失。
+
+**修复**: 添加 `RuntimeState.LowGainTest`, `OperatorCommand.low_gain_mode`,
+键盘 L 键绑定, Ready↔LowGainTest 转换, 30% 增益控制行为。
+
+### Gap 13: Python WaitFeedback 未使用
+
+**严重程度**: 🟡 中等
+
+Python `RuntimeState` 枚举中有 `WaitFeedback` 但从未使用 (初始化就进入 `Ready`)。
+C++ 启动时进入 `WaitFeedback` 等待所有电机反馈就绪。
+
+**修复**: 初始状态改为 `WaitFeedback`,MuJoCo 中首 tick 即转入 `Ready`。
+
+### Gap 14: inference 仅 ActiveRL 运行
+
+**严重程度**: 🔴 致命
+
+C++ 在所有 active 状态 (ActiveRL, EnteringPosition, ActivePC) 均运行策略推理,
+Python 仅在 ActiveRL 运行。
+
+**修复**: 推理条件从 `ActiveRL and rl_inference` 改为 `runtime_state in
+(ActiveRL, EnteringPosition, ActivePC) and command.active`。
+
+### Gap 15: 推理失败处理不一致
+
+**严重程度**: 🔴 致命
+
+C++ 中 ActiveRL 推理失败降级到 ActivePC,EnteringPosition/ActivePC 失败进
+DampingFault。Python 所有情况下都降级到 ActivePC。
+
+**修复**: 区分 ActiveRL (降级) 和非 ActiveRL (进 DampingFault) 的处理路径。
+
+### Gap 16: EnteringPosition 偏离检测目标不同
+
+**严重程度**: 🔴 致命
+
+C++ `updateStateMachine()` 检查 `abs(pos - default_pos)` 是否超过
+`pc_startup_max_deviation`。Python `_check_startup_deviation()` 检查
+`abs(pos - limited_target)`。
+
+**修复**: 改为检查 `abs(pos - DEFAULT_POS)`,与 C++ 一致。
+
+### Gap 17: EnteringPosition limited_target 初始化差异
+
+**严重程度**: 🟡 中等
+
+Python 在进入 EnteringPosition 时将 `limited_target` 重置为当前关节位置,
+C++ 不重置 (保留之前的值)。
+
+**修复**: 移除 Python 的 `limited_target = current_positions` 快照逻辑。
+
+### Gap 18: rl_fallback_active 未在 ActivePC→ActiveRL 重置
+
+**严重程度**: 🟢 低
+
+C++ `updateStateMachine()` 在 ActivePC→ActiveRL 转换时重置
+`rl_fallback_active = false`。Python 缺少此行。
+
+**修复**: 添加 `self.rl_fallback_active = False`。
+
+### Gap 19: LowGainTest 目标计算缺失
+
+**严重程度**: 🟡 中等
+
+C++ `updateTargets()` 在 LowGainTest 时强制 `logical_target = default_pos`。
+Python 目标计算块未处理 LowGainTest。
+
+**修复**: 添加 LowGainTest 分支,逻辑目标直接设为 DEFAULT_POS。
+
+---
+
+## 配置去重 (P0-2)
+
+### 问题
+
+`DeployConfig` (24 字段) 和 `SafetyConfig` (13 字段) 所有 13 个字段完全重复。
+`main.cpp` 中有 13 行逐字段拷贝代码。`SafetyConfig` 从未独立加载,始终是
+`DeployConfig` 的子集拷贝。
+
+### 修复
+
+- 删除 `SafetyConfig` 结构体
+- `safetyFault()` 直接接受 `const DeployConfig&`
+- `RuntimeState` 枚举和 `JointSafetyState` 从 `safety.hpp` 移至 `types.hpp`
+  (同时解决了 P1 级别的 "RuntimeState 定义位置不当" 问题)
+- `controller.hpp` 解除对 `safety.hpp` 的 include 依赖
+- `main.cpp` 删除 13 行拷贝代码块
+- 所有 `safety.X` 访问改为 `config.X`
+
+---
+
+## C++ 配置修复
+
+### action_scale: 0.50 → 0.25
+
+`src/opendoge_deploy/configs/opendoge_deploy.conf` 中的 `action_scale=0.50`
+从未更新为训练值 0.25。CLAUDE.md Gap 3 声称已修复但修复仅应用于 Python 侧。
+实机部署使用 0.50 (训练值的 2 倍)。
+
+**修复**: C++ 配置文件 `action_scale=0.50` → `0.25`。
+
+---
+
+## 回归测试
+
+新增 `test/deploy_gap_regression.py`: 纯函数回归测试 (无 MuJoCo/ONNX 依赖)。
+
+测试覆盖:
+- `rate_limit()` — 速率限制器语义
+- `advance_phase()` — 步态相位公式、频率映射、相位折返
+- `build_observation()` — **velocity 必须为原始值 (无 *0.5)**,字段顺序,维度
+- Target computation — `action_scale=0.25`,RL 跳过 rate_limit,PC 使用 rate_limit,
+  关节限位裁剪,LowGainTest 强制默认姿态
+- PD 控制 — 阻尼/斜坡/Active/LowGainTest 四种模式的增益数值
+
+运行: `python3 test/deploy_gap_regression.py`
+
+---
+
+## Round 3 对齐后的最终状态
+
+| 项目 | C++ | Python | 状态 |
+|------|-----|--------|:----:|
+| 状态机 7 状态 | WaitFeedback/Ready/EnteringPosition/ActivePC/ActiveRL/LowGainTest/DampingFault | 同 | ✅ |
+| LowGainTest | 30% 增益,强制 DEFAULT_POS | 同 | ✅ |
+| WaitFeedback | 启动等待反馈 | 同 (MuJoCo 瞬切) | ✅ |
+| 推理条件 | 所有 active 状态 | 同 | ✅ |
+| 推理失败处理 | ActiveRL 降级,其他进 DampingFault | 同 | ✅ |
+| 观测速度 | 原始值 (direction * motor_velocity) | 原始值 (joint_velocities) | ✅ |
+| action_scale | 0.25 (C++ config 修复) | 0.25 | ✅ |
+| 偏离检测 | abs(pos - DEFAULT_POS) | 同 | ✅ |
+| rl_fallback_active 重置 | 每次离开 ActiveRL 时重置 | 同 | ✅ |
+| LowGainTest 目标 | 强制 DEFAULT_POS | 同 | ✅ |
+| SafetyConfig/DeployConfig 重复 | 已消除 (SafetyConfig 删除) | N/A | ✅ |
+| RuntimeState 位置 | types.hpp | deploy_mujoco.py RuntimeState | ✅ |
+| 回归测试 | C++ build + dry-run | deploy_gap_regression.py (53 项) | ✅ |

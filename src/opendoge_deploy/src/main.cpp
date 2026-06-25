@@ -143,20 +143,6 @@ int main(int argc, char ** argv)
   double next_fault_poll_s = start_s;
   double next_status_s = start_s + 1.0;
   opendoge::RuntimeState runtime_state = opt.dry_run ? opendoge::RuntimeState::Ready : opendoge::RuntimeState::WaitFeedback;
-  opendoge::SafetyConfig safety;
-  safety.safe_kd = config.safe_kd;
-  safety.state_timeout_s = config.state_timeout_s;
-  safety.over_temperature_c = config.over_temperature_c;
-  safety.torque_threshold = config.torque_threshold;
-  safety.torque_timeout_s = config.torque_timeout_s;
-  safety.tracking_error_threshold = config.tracking_error_threshold;
-  safety.tracking_error_timeout_s = config.tracking_error_timeout_s;
-  safety.command_timeout_s = config.command_timeout_s;
-  safety.fall_gravity_z_threshold = config.fall_gravity_z_threshold;
-  safety.fall_timeout_s = config.fall_timeout_s;
-  safety.feedback_wait_timeout_s = config.feedback_wait_timeout_s;
-  safety.temp_warn_c = config.temp_warn_c;
-  safety.imu_debounce_count = config.imu_debounce_count;
   opendoge::OperatorCommand command = opt.static_command;
   opendoge::ImuSample imu;
   imu.valid = opt.allow_missing_imu;
@@ -213,7 +199,7 @@ int main(int argc, char ** argv)
           const double file_age_s = t - std::max(
             static_cast<double>(cmd_stat.st_mtime),
             static_cast<double>(cmd_stat.st_ctime));
-          if (file_age_s > safety.command_timeout_s) {
+          if (file_age_s > config.command_timeout_s) {
             std::cerr << "Warning: command file stale for "
                       << file_age_s << "s, zeroing commands\n";
             command.vx = 0.0;
@@ -251,7 +237,7 @@ int main(int argc, char ** argv)
       } else {
         imu_invalid_count = 0;
       }
-      if (!opt.allow_missing_imu && imu_invalid_count > safety.imu_debounce_count) {
+      if (!opt.allow_missing_imu && imu_invalid_count > config.imu_debounce_count) {
         runtime_state = opendoge::RuntimeState::Ready;
       }
       next_input_s = t + 0.005;
@@ -260,7 +246,7 @@ int main(int argc, char ** argv)
     // ── Safety checks (non-WaitFeedback states) ──
     if (!opt.dry_run && runtime_state != opendoge::RuntimeState::WaitFeedback) {
       std::string safety_reason;
-      const bool fault_now = opendoge::safetyFault(states, joints, config.joints, safety, runtime_state,
+      const bool fault_now = opendoge::safetyFault(states, joints, config.joints, config, runtime_state,
             limited_target, imu, safety_state, t, safety_reason);
       if (fault_now) {
         fault_reason = safety_reason;
@@ -292,7 +278,7 @@ int main(int argc, char ** argv)
     if (runtime_state != opendoge::RuntimeState::DampingFault) {
       opendoge::updateStateMachine(
         runtime_state, rl_fallback_active, command, opt,
-        states, config, safety, imu, t,
+        states, config, imu, t,
         pc_startup_start_s, feedback_wait_start_s, fault_reason);
     }
 

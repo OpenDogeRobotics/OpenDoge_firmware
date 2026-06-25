@@ -131,7 +131,8 @@ class RuntimeState(Enum):
     EnteringPosition = 2
     ActivePC = 3
     ActiveRL = 4
-    DampingFault = 5
+    LowGainTest = 5
+    DampingFault = 6
 
 
 @dataclass
@@ -144,7 +145,7 @@ class DeployConfig:
     safe_kd: float = 2.0
     action_scale: float = 0.25
     pc_startup_ramp_s: float = 2.0
-    pc_startup_max_deviation: float = 2.0  # 趴伏→站立全程跟踪容差
+    pc_startup_max_deviation: float = 2.0  # MuJoCo 从 REST_POSE (~2 rad from stand) 启动，需大容差。硬件侧为 0.25 (C++ config)
 
 
 @dataclass
@@ -156,6 +157,7 @@ class OperatorCommand:
     estop: bool = False
     position_control: bool = False
     rl_inference: bool = False
+    low_gain_mode: bool = False
 
 
 @dataclass
@@ -206,7 +208,7 @@ def build_observation(
     obs[offset:offset+NUM_JOINTS] = joint_positions - default_pos
     offset += NUM_JOINTS
 
-    # 4. dof_vel (12)
+    # 4. dof_vel (12) — raw velocity, no scaling (matches C++ observer.cpp)
     obs[offset:offset+NUM_JOINTS] = joint_velocities
     offset += NUM_JOINTS
 
@@ -447,6 +449,7 @@ class KeyboardHandler:
         self.estop = False
         self.position_control = False
         self.rl_inference = False
+        self.low_gain_mode = False
         self.should_quit = False
         self._pending_keys = []
         # 方向键速度命令
@@ -474,6 +477,7 @@ class KeyboardHandler:
             self.active_requested = False
             self.position_control = False
             self.rl_inference = False
+            self.low_gain_mode = False
             self._arrow_vx = 0.0
             self._arrow_vy = 0.0
             self._arrow_yaw = 0.0
@@ -490,6 +494,7 @@ class KeyboardHandler:
             self.active_requested = False
             self.position_control = False
             self.rl_inference = False
+            self.low_gain_mode = False
             self._arrow_vx = 0.0
             self._arrow_vy = 0.0
             self._arrow_yaw = 0.0
@@ -506,6 +511,10 @@ class KeyboardHandler:
                 self.rl_inference = False
                 self.position_control = True
                 print(f"[KEY] 位置控制 → ActivePC (key={keycode})")
+
+        elif keycode in (76,):  # L
+            self.low_gain_mode = not self.low_gain_mode
+            print(f"[KEY] Low gain mode {'ON' if self.low_gain_mode else 'OFF'} (key={keycode})")
 
         # ── 方向键速度命令 ──────────────────────────────────────────
         elif keycode == 265:  # ↑ 前进
@@ -542,6 +551,7 @@ class KeyboardHandler:
         cmd.active = active
         cmd.position_control = self.position_control if active else False
         cmd.rl_inference = self.rl_inference if active else False
+        cmd.low_gain_mode = self.low_gain_mode
 
         return cmd
 
@@ -638,7 +648,7 @@ class DeployController:
         self.logger = logger
 
         # 状态机变量
-        self.runtime_state = RuntimeState.Ready
+        self.runtime_state = RuntimeState.WaitFeedback
         self.fault_latched = False
         self.fault_reason = ""
         self.rl_fallback_active = False
@@ -650,7 +660,6 @@ class DeployController:
         self.logical_target = DEFAULT_POS.copy()
         self.limited_target = DEFAULT_POS.copy()
         self.pc_startup_start_s = 0.0
-        self._pc_startup_snapshot = DEFAULT_POS.copy()
 
         # 快照时间戳
         self._last_infer_tick = -1
@@ -665,10 +674,10 @@ class DeployController:
         return cmd
 
     def _check_startup_deviation(self) -> bool:
-        """检查 ramp 期间关节跟踪 limited_target (防失控)"""
+        """检查 ramp 期间关节偏离 DEFAULT_POS (防失控，与 C++ 一致)"""
         q = self.sim.get_joint_positions()
         for i in range(NUM_JOINTS):
-            if abs(q[i] - self.limited_target[i]) > self.config.pc_startup_max_deviation:
+            if abs(q[i] - DEFAULT_POS[i]) > self.config.pc_startup_max_deviation:
                 return False
         return True
 
@@ -686,9 +695,26 @@ class DeployController:
             self.runtime_state = RuntimeState.DampingFault
             print(f"\n[{t:.3f}s] 故障锁存: {self.fault_reason}")
 
-        # --- 状态转换 ---
+        # --- 状态转换 (与 C++ controller.cpp updateStateMachine 一致) ---
         if not self.fault_latched:
 
+            # ── Mode priority: RL beats position control ──
+            if command.rl_inference and command.position_control:
+                command.position_control = False
+
+            # ── WaitFeedback → Ready (MuJoCo always has "feedback" immediately) ──
+            if self.runtime_state == RuntimeState.WaitFeedback:
+                self.runtime_state = RuntimeState.Ready
+
+            # ── Ready ↔ LowGainTest ──
+            if self.runtime_state == RuntimeState.Ready and command.low_gain_mode:
+                self.runtime_state = RuntimeState.LowGainTest
+                print(f"\n[{t:.3f}s] Ready → LowGainTest")
+            if self.runtime_state == RuntimeState.LowGainTest and not command.low_gain_mode:
+                self.runtime_state = RuntimeState.Ready
+                print(f"\n[{t:.3f}s] LowGainTest → Ready")
+
+            # ── Ready → EnteringPosition / ActiveRL ──
             if self.runtime_state == RuntimeState.Ready and command.active:
                 if command.rl_inference:
                     self.runtime_state = RuntimeState.ActiveRL
@@ -696,15 +722,12 @@ class DeployController:
                 else:
                     self.runtime_state = RuntimeState.EnteringPosition
                     self.pc_startup_start_s = t
-                    self._pc_startup_snapshot = self.sim.get_joint_positions().copy()
-                    # 将 limited_target 重置到当前关节位, rate_limiter 逐步拉到站立
-                    self.limited_target = self.sim.get_joint_positions().copy()
                     print(
                         f"\n[{t:.3f}s] Ready → EnteringPosition "
-                        f"(斜坡 {config.pc_startup_ramp_s}s, "
-                        f"limited_target←current)"
+                        f"(斜坡 {config.pc_startup_ramp_s}s)"
                     )
 
+            # ── EnteringPosition transitions ──
             elif self.runtime_state == RuntimeState.EnteringPosition:
                 if not command.active:
                     self.runtime_state = RuntimeState.Ready
@@ -724,6 +747,7 @@ class DeployController:
                         self.runtime_state = RuntimeState.ActivePC
                         print(f"\n[{t:.3f}s] EnteringPosition → ActivePC (斜坡完成)")
 
+            # ── ActivePC / ActiveRL → Ready ──
             elif (
                 self.runtime_state in (RuntimeState.ActivePC, RuntimeState.ActiveRL)
                 and not command.active
@@ -732,10 +756,13 @@ class DeployController:
                 self.runtime_state = RuntimeState.Ready
                 self.rl_fallback_active = False
 
+            # ── ActivePC → ActiveRL ──
             elif self.runtime_state == RuntimeState.ActivePC and command.rl_inference:
                 self.runtime_state = RuntimeState.ActiveRL
+                self.rl_fallback_active = False
                 print(f"\n[{t:.3f}s] ActivePC → ActiveRL")
 
+            # ── ActiveRL → ActivePC ──
             elif (
                 self.runtime_state == RuntimeState.ActiveRL
                 and not command.rl_inference
@@ -744,13 +771,13 @@ class DeployController:
                 self.rl_fallback_active = False
                 print(f"\n[{t:.3f}s] ActiveRL → ActivePC")
 
-        # --- 推理块 (100 Hz) ---
+        # --- 推理块 (100 Hz, 与 C++ main.cpp 一致: 所有 active 状态均运行推理) ---
         infer_tick = int(t * config.inference_hz)
         if infer_tick != self._last_infer_tick:
             self._last_infer_tick = infer_tick
             if (
-                self.runtime_state == RuntimeState.ActiveRL
-                and command.rl_inference
+                self.runtime_state in (RuntimeState.ActiveRL, RuntimeState.EnteringPosition, RuntimeState.ActivePC)
+                and command.active
                 and self.policy is not None
             ):
                 self.phase = advance_phase(command, self.phase, 1.0 / config.inference_hz)
@@ -766,22 +793,31 @@ class DeployController:
                 )
                 success, action, error = self.policy.infer(obs)
                 if not success:
-                    self.runtime_state = RuntimeState.ActivePC
-                    self.rl_fallback_active = True
-                    self.action.fill(0.0)
-                    print(f"\n[{t:.3f}s] RL 推理失败 → ActivePC (降级): {error}")
+                    if self.runtime_state == RuntimeState.ActiveRL:
+                        self.runtime_state = RuntimeState.ActivePC
+                        self.rl_fallback_active = True
+                        self.action.fill(0.0)
+                        print(f"\n[{t:.3f}s] RL 推理失败 → ActivePC (降级): {error}")
+                    else:
+                        self.fault_latched = True
+                        self.fault_reason = f"policy inference failed: {error}"
+                        self.runtime_state = RuntimeState.DampingFault
+                        print(f"\n[{t:.3f}s] 故障: {self.fault_reason}")
                 else:
                     self.action = action
             else:
                 self.action.fill(0.0)
 
-        # --- 目标计算块 (200 Hz) ---
+        # --- 目标计算块 (200 Hz, 与 C++ controller.cpp updateTargets 一致) ---
         target_tick = int(t * config.target_hz)
         if target_tick != self._last_target_tick:
             self._last_target_tick = target_tick
             for i in range(NUM_JOINTS):
-                self.last_action[i] = self.action[i]
-                tgt = DEFAULT_POS[i] + self.last_action[i] * config.action_scale
+                self.last_action[i] = np.clip(self.action[i], -1.0, 1.0)
+                if self.runtime_state == RuntimeState.LowGainTest:
+                    tgt = DEFAULT_POS[i]
+                else:
+                    tgt = DEFAULT_POS[i] + self.last_action[i] * config.action_scale
                 tgt = np.clip(tgt, JOINT_LOWER[i], JOINT_UPPER[i])
                 self.logical_target[i] = tgt
                 # RL 模式跳过 rate_limit，策略训练时目标瞬时切换，无平滑延迟
@@ -792,15 +828,21 @@ class DeployController:
                         self.logical_target[i], self.limited_target[i], MAX_POSITION_STEP
                     )
 
-        # --- 控制块 (1000 Hz) — 每步都执行 ---
+        # --- 控制块 (1000 Hz, 与 C++ controller.cpp computeMotorCommands 一致) ---
         is_active = self.runtime_state in (RuntimeState.ActivePC, RuntimeState.ActiveRL)
         is_ramping = self.runtime_state == RuntimeState.EnteringPosition
+        is_low_gain = self.runtime_state == RuntimeState.LowGainTest
 
-        if not is_active and not is_ramping:
+        if not is_active and not is_ramping and not is_low_gain:
             # Ready / WaitFeedback / DampingFault: 关节全失能, 仅阻尼
             kp_gains = np.zeros(NUM_JOINTS)
             kd_gains = np.full(NUM_JOINTS, config.safe_kd)
             target_positions = self.sim.get_joint_positions()
+        elif is_low_gain:
+            # LowGainTest: 30% gains, hold DEFAULT_POS
+            kp_gains = np.full(NUM_JOINTS, config.kp * 0.3)
+            kd_gains = np.full(NUM_JOINTS, config.kd * 0.3)
+            target_positions = DEFAULT_POS.copy()
         elif is_ramping:
             ramp_elapsed = t - self.pc_startup_start_s
             ramp_frac = min(ramp_elapsed / config.pc_startup_ramp_s, 1.0)
