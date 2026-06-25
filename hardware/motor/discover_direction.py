@@ -13,9 +13,10 @@ OpenDoge 电机方向自动检测 — 轻推关节, 无需掰到站立位。
 操作 (比掰到站立位简单得多):
   1. 机器人趴地、已标零
   2. 脚本提示"推 [关节名] 向 [方向]"
-  3. 轻推 ~5-10° (约 0.1-0.2 rad), 保持 2 秒后松手
+  3. 轻推 ~5-10° (约 0.1-0.2 rad), 5s 窗口内完成
   4. 脚本自动检测 mechPos 变化方向, 判定 direction
-  5. 重复 12 次即可全部完成
+  5. 按 Enter 进下一个关节, 按 q 保存退出
+  6. 重复 12 次即可全部完成
 """
 
 import argparse
@@ -40,13 +41,13 @@ JOINTS = [
     ("FL_hip_joint",   "can0", 1,   "向外推 (远离身体中线)"),
     ("FL_thigh_joint", "can0", 2,   "向前推 (腿往头部方向)"),
     ("FL_calf_joint",  "can0", 3,   "伸直小腿 (脚远离身体)"),
-    ("FR_hip_joint",   "can1", 4,   "向外推 (远离身体中线)"),
+    ("FR_hip_joint",   "can1", 4,   "向内推 (靠近身体中线)"),
     ("FR_thigh_joint", "can1", 5,   "向前推 (腿往头部方向)"),
     ("FR_calf_joint",  "can1", 6,   "伸直小腿 (脚远离身体)"),
     ("RL_hip_joint",   "can2", 7,   "向外推 (远离身体中线)"),
     ("RL_thigh_joint", "can2", 8,   "向前推 (腿往头部方向)"),
     ("RL_calf_joint",  "can2", 9,   "伸直小腿 (脚远离身体)"),
-    ("RR_hip_joint",   "can3", 10,  "向外推 (远离身体中线)"),
+    ("RR_hip_joint",   "can3", 10,  "向内推 (靠近身体中线)"),
     ("RR_thigh_joint", "can3", 11,  "向前推 (腿往头部方向)"),
     ("RR_calf_joint",  "can3", 12,  "伸直小腿 (脚远离身体)"),
 ]
@@ -63,7 +64,7 @@ def read_joint(bus: El05Bus, motor_id: int) -> Optional[float]:
 
 
 def detect_direction(bus: El05Bus, motor_id: int, joint_name: str, description: str,
-                     settle_s: float = 2.0, threshold: float = 0.03) -> tuple[int, float, list[float]]:
+                     settle_s: float = 5.0, threshold: float = 0.03) -> tuple[int, float, list[float]]:
     """
     引导用户轻推关节, 记录 mechPos 轨迹, 判定 direction。
 
@@ -73,7 +74,7 @@ def detect_direction(bus: El05Bus, motor_id: int, joint_name: str, description: 
     print(f"\n{'='*60}")
     print(f"📌 {joint_name}")
     print(f"   👉 {description}")
-    print(f"   等待 {settle_s:.0f}s 建立基线...")
+    print(f"   等待 {settle_s:.0f}s 建立基线 (请勿触碰)...")
 
     # Baseline
     start = time.monotonic()
@@ -153,30 +154,15 @@ def main():
             print(f"无法打开 {ch}: {e}")
             return 1
 
-    # Load previous results
+    # Fresh start — no resume
     state_path = LOG_DIR / "directions.json"
     directions = [1] * 12
-    if state_path.exists():
-        try:
-            saved = json.loads(state_path.read_text())
-            for i, v in enumerate(saved.get("directions", [])):
-                if i < 12:
-                    directions[i] = int(v)
-            loaded = sum(1 for i in indices if saved.get("tested", [False]*12)[i])
-            if loaded:
-                print(f"📂 从上次加载了 {loaded} 个已测关节")
-        except (json.JSONDecodeError, KeyError):
-            pass
-
     tested = [False] * 12
     deviations = [0.0] * 12
 
     try:
         for i in indices:
             name, ch, mid, desc = JOINTS[i]
-            if tested[i]:
-                print(f"\n  ⏭️  {name}: 已测, direction={directions[i]:+d}, 跳过")
-                continue
 
             bus = buses[ch]
             direction, max_dev, trajectory = detect_direction(bus, mid, name, desc)
@@ -193,6 +179,14 @@ def main():
                 "deviations": deviations,
                 "timestamp": datetime.now().isoformat(),
             }, indent=2))
+
+            # Wait for user confirmation before next joint
+            remaining = sum(1 for j in indices if not tested[j])
+            if remaining > 0:
+                resp = input(f"\n   📋 剩余 {remaining} 个关节, 按 Enter 继续 (q 退出): ").strip().lower()
+                if resp == 'q':
+                    print("用户退出, 已保存进度")
+                    break
 
     except KeyboardInterrupt:
         print("\n\n用户中断, 已保存进度")
