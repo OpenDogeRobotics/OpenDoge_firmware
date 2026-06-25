@@ -53,7 +53,7 @@ int main(int argc, char ** argv)
   if (opt.config_path.empty()) {
     const std::array<std::string, 3> default_config_paths{
       "configs/opendoge_deploy.conf",
-      "src/opendoge_deploy/configs/opendoge_deploy.conf",
+      "deploy/configs/opendoge_deploy.conf",
       "install/opendoge_deploy/share/opendoge_deploy/configs/opendoge_deploy.conf"};
     for (const auto & path : default_config_paths) {
       if (fileExists(path)) {

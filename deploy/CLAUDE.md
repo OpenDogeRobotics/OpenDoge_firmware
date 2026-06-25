@@ -5,8 +5,8 @@
 `opendoge_deploy` 是非 ROS 的 C++ 实机 RL 部署运行时。完整链路：
 
 ```
-daemons/imu_bridge/dm_imu_bridge.py             → /tmp/opendoge_imu.state      → opendoge_deploy 文件轮询
-daemons/command_bridge/xbox_command_bridge.py  → /tmp/opendoge_command.state  → opendoge_deploy 文件轮询
+hardware/imu/dm_imu_bridge.py             → /tmp/opendoge_imu.state      → opendoge_deploy 文件轮询
+hardware/gamepad/xbox_command_bridge.py  → /tmp/opendoge_command.state  → opendoge_deploy 文件轮询
 opendoge_deploy (C++, SCHED_FIFO)
   → ONNX policy 推理 @ 100 Hz (CPU)
   → 目标位置计算 @ 200 Hz (PD + rate limit)
@@ -22,7 +22,7 @@ opendoge_deploy (C++, SCHED_FIFO)
 | `types.hpp` | 数据类型 (JointMap, MotorState, DeployConfig, ImuSample 等) + 工具函数 | 全局共享，新增字段需同步 `deploy_mujoco.py` |
 | `policy.hpp/cpp` | 策略抽象层 (Policy 基类 + makePolicy 工厂) | 只加 backend，不改接口 |
 | `onnx_policy.cpp` | ONNX Runtime 策略后端 | 无特殊限制 |
-| `el05_socketcan.hpp/cpp` | EL05 私有 CAN 协议层 | 协议常量 (kComm*, kIndex*) 需与 `bringup/el05/el05_motor_menu.py` 保持一致 |
+| `el05_socketcan.hpp/cpp` | EL05 私有 CAN 协议层 | 协议常量 (kComm*, kIndex*) 需与 `hardware/motor/el05_motor_menu.py` 保持一致 |
 | `runtime_io.hpp/cpp` | 文件 I/O (配置解析、command.state、imu.state) | 格式见下方 |
 | `main.cpp` | **主循环 + CLI + 状态机 + 观测构建 + 安全监控 + PD 控制 + JSON 状态输出** (god object) | **重构目标** |
 
@@ -42,27 +42,27 @@ opendoge_deploy (C++, SCHED_FIFO)
 
 ### C++ 与 Python 控制逻辑重复
 
-`test/deploy_mujoco.py` 中的 `DeployController` 类完整复现了 `main.cpp` 的控制回路：
+`sim2sim/deploy_mujoco.py` 中的 `DeployController` 类完整复现了 `main.cpp` 的控制回路：
 - 状态机转换逻辑 — 两份实现
 - 观测构建 (`buildObservation` vs `build_observation`) — 两份实现
 - 步态相位 (`advancePhase` vs `advance_phase`) — 两份实现
 - rate limiter — 两份实现
 
-任何对控制逻辑的修改必须同步两份代码。当前通过 `test/CLAUDE.md` 记录 Gap 来手动追踪一致性。
+任何对控制逻辑的修改必须同步两份代码。当前通过 `sim2sim/CLAUDE.md` 记录 Gap 来手动追踪一致性。
 
 ### EL05 协议两份实现
 
 | 位置 | 语言 | 用途 |
 |------|------|------|
-| `src/opendoge_deploy/src/el05_socketcan.cpp` | C++ | 生产部署 |
-| `bringup/el05/el05_motor_menu.py` | Python | 硬件 bringup/调测 |
-| `bringup/el05/protocol_selftest.py` | Python | 协议自检 |
+| `hardware/motor/el05_socketcan.cpp` | C++ | 生产部署 |
+| `hardware/motor/el05_motor_menu.py` | Python | 硬件 bringup/调测 |
+| `hardware/motor/protocol_selftest.py` | Python | 协议自检 |
 
 CAN ID 构造、float→uint 映射范围 (P_MIN, V_MIN, T_MIN 等) 必须三处一致。
 
 ### 电机单独调参接口缺失
 
-`opendoge_deploy` 运行时**没有**单电机调参能力。所有电机单独测试必须通过 `bringup/el05/el05_motor_menu.py` 的交互菜单完成。如果需要"在真实控制回路下测试单个电机响应"的功能，需要在 C++ 侧新增模式。
+`opendoge_deploy` 运行时**没有**单电机调参能力。所有电机单独测试必须通过 `hardware/motor/el05_motor_menu.py` 的交互菜单完成。如果需要"在真实控制回路下测试单个电机响应"的功能，需要在 C++ 侧新增模式。
 
 ## 配置与数据格式
 
@@ -142,9 +142,9 @@ gyro(3) + neg_gravity(3) + dof_pos_diff(12) + dof_vel(12)
 
 ## 与外部的关系
 
-### 与 test/deploy_mujoco.py 的关系
+### 与 sim2sim/deploy_mujoco.py 的关系
 
-`test/deploy_mujoco.py` 是 `main.cpp` 控制回路的 Python 级验证仿真器。修改 `main.cpp` 的控制逻辑后，必须同步更新 `deploy_mujoco.py`，反之亦然。关键同步点：
+`sim2sim/deploy_mujoco.py` 是 `main.cpp` 控制回路的 Python 级验证仿真器。修改 `main.cpp` 的控制逻辑后，必须同步更新 `deploy_mujoco.py`，反之亦然。关键同步点：
 
 - 状态机转换规则
 - `buildObservation()` / `build_observation()` 观测维度、顺序、归一化
@@ -159,15 +159,15 @@ gyro(3) + neg_gravity(3) + dof_pos_diff(12) + dof_vel(12)
 - `defaultJointPosition()` 必须匹配训练侧 `scene_flat.xml` keyframe
 - 观测结构必须与训练 actor 观测一致 (当前 49 维, 无 linvel)
 - ONNX 模型中的 obs_normalizer 使用训练期 running mean/std
-- XML 物理参数 (joint damping, foot friction, cone/impratio) 已对齐 → 见 `test/CLAUDE.md`
+- XML 物理参数 (joint damping, foot friction, cone/impratio) 已对齐 → 见 `sim2sim/CLAUDE.md`
 
 ### 与 daemons / bringup 的关系
 
-`daemons/` 是**实机硬件 I/O 守护进程**，负责将物理设备桥接为文件 IPC：
+`hardware/` 是**实机硬件 I/O 层**，负责将物理设备桥接为文件 IPC：
 
 ```
-daemons/imu_bridge/dm_imu_bridge.py             → 串口读数 → /tmp/opendoge_imu.state
-daemons/command_bridge/xbox_command_bridge.py  → HID 输入 → /tmp/opendoge_command.state
+hardware/imu/dm_imu_bridge.py             → 串口读数 → /tmp/opendoge_imu.state
+hardware/gamepad/xbox_command_bridge.py  → HID 输入 → /tmp/opendoge_command.state
 ```
 
 `opendoge_deploy` 仅通过文件轮询读取这些数据，不直接操作硬件。这是**有意设计**：
@@ -175,7 +175,7 @@ daemons/command_bridge/xbox_command_bridge.py  → HID 输入 → /tmp/opendoge_
 - 守护进程可以独立重启而不影响主控制回路
 - 文件格式简单，方便 dry-run 测试时手动注入数据
 
-`bringup/el05/` 是 bringup/标定工具，在部署前使用，运行时不需要。
+`hardware/motor/` 是 bringup/标定工具，在部署前使用，运行时不需要。
 
 ## 安全状态机
 
@@ -204,7 +204,7 @@ WaitFeedback → Ready ↔ EnteringPosition → ActivePC ↔ ActiveRL
 1. **新增配置参数**: 在 `DeployConfig` + `SafetyConfig` (`types.hpp`) 中加字段 → `runtime_io.cpp` 的 `loadDeployConfig()` 增加解析 → `main.cpp` 传入对应的 safety 结构体
 2. **新增状态**: 在 `RuntimeState` 枚举添加 → 所有 switch(state) 处增加处理
 3. **修改观测格式**: `buildObservation()` + `deploy_mujoco.py` 的 `build_observation()` 同步修改，确保维度为 `kObsDim`
-4. **修改 CAN 协议**: `el05_socketcan.cpp` + `bringup/el05/el05_motor_menu.py` 同步修改
+4. **修改 CAN 协议**: `el05_socketcan.cpp` + `hardware/motor/el05_motor_menu.py` 同步修改
 5. **修改控制回路**: `main.cpp` 的控制块 (L887-943) + `deploy_mujoco.py` 的 `DeployController.step()` 同步修改
 6. **新增 policy backend**: 实现 `Policy` 接口 → 在 `makePolicy()` 注册
 

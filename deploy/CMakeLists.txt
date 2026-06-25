@@ -9,7 +9,7 @@ option(OPENDOGE_ENABLE_ONNX "Build ONNX Runtime policy backend when headers/libs
 add_library(opendoge_deploy_core
   src/cli.cpp
   src/controller.cpp
-  src/el05_socketcan.cpp
+  ../hardware/motor/el05_socketcan.cpp
   src/observer.cpp
   src/policy.cpp
   src/runtime_io.cpp
@@ -20,6 +20,7 @@ add_library(opendoge_deploy_core
 target_include_directories(opendoge_deploy_core
   PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../hardware/motor>
     $<INSTALL_INTERFACE:include>
 )
 
