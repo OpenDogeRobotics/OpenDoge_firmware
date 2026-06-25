@@ -9,7 +9,7 @@ After=default.target
 Type=simple
 # Wait up to 30s for xboxdrv to create /dev/input/js0
 ExecStartPre=/bin/sh -c 'for i in $$(seq 1 60); do [ -e /dev/input/js0 ] && exit 0; sleep 0.5; done; echo "js0 not found after 30s" >&2; exit 1'
-ExecStart=/usr/bin/python3 /home/orangepi/Opendoge/OpenDoge_firmware/daemons/command_bridge/xbox_command_bridge.py \
+ExecStart=/usr/bin/python3 /home/orangepi/Opendoge/OpenDoge_firmware/hardware/gamepad/xbox_command_bridge.py \
     --output /tmp/opendoge_command.state \
     --require-rb
 # Always restart — bridge has its own reconnection logic for js0 loss,

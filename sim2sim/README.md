@@ -1,18 +1,18 @@
 # OpenDoge MuJoCo 仿真测试
 
 ```bash
-cd /home/lain/OpenDoge/OpenDoge_firmware && python3 test/deploy_mujoco.py --mode idle
+cd /home/lain/OpenDoge/OpenDoge_firmware && python3 sim2sim/deploy_mujoco.py --mode idle
 ```
 
-cd /home/lain/OpenDoge/OpenDoge_firmware && python3 test/deploy_mujoco.py --mode rl --policy policy/opendoge_r5.onnx
+cd /home/lain/OpenDoge/OpenDoge_firmware && python3 sim2sim/deploy_mujoco.py --mode rl --policy policy/opendoge_r5.onnx
 
 
 ## 测试脚本
 
 | 脚本 | 用途 | 用法 |
 |---|---|---|
-| `deploy_mujoco.py` | OpenDoge MuJoCo 仿真，复现 deploy 控制回路（状态机、PD 控制、RL 推理） | `python3 test/deploy_mujoco.py --mode idle` |
-| `calc_zero_offset.py` | 计算 URDF 零位 → 平地趴伏的补偿角度 | `python3 test/calc_zero_offset.py` |
+| `deploy_mujoco.py` | OpenDoge MuJoCo 仿真，复现 deploy 控制回路（状态机、PD 控制、RL 推理） | `python3 sim2sim/deploy_mujoco.py --mode idle` |
+| `calc_zero_offset.py` | 计算 URDF 零位 → 平地趴伏的补偿角度 | `python3 sim2sim/calc_zero_offset.py` |
 
 ## 依赖
 
@@ -23,12 +23,12 @@ pip install mujoco numpy
 ## deploy_mujoco.py 用法
 
 ```bash
-python3 test/deploy_mujoco.py                          # 位置控制模式
-python3 test/deploy_mujoco.py --mode idle              # 待机模式 (阻尼趴伏)
-python3 test/deploy_mujoco.py --mode rl                # RL 推理模式 (模拟)
-python3 test/deploy_mujoco.py --duration 10            # 运行 10 秒
-python3 test/deploy_mujoco.py --no-render              # 无渲染 (headless)
-python3 test/deploy_mujoco.py --cmd 0.3 0 0            # 静态速度命令
+python3 sim2sim/deploy_mujoco.py                          # 位置控制模式
+python3 sim2sim/deploy_mujoco.py --mode idle              # 待机模式 (阻尼趴伏)
+python3 sim2sim/deploy_mujoco.py --mode rl                # RL 推理模式 (模拟)
+python3 sim2sim/deploy_mujoco.py --duration 10            # 运行 10 秒
+python3 sim2sim/deploy_mujoco.py --no-render              # 无渲染 (headless)
+python3 sim2sim/deploy_mujoco.py --cmd 0.3 0 0            # 静态速度命令
 ```
 
 ### 键盘控制 (渲染窗口)
