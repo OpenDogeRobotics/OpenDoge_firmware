@@ -96,6 +96,14 @@ DEFAULT_MOTORS = [
     ("RR_calf_joint", 12),
 ]
 
+# 每个 CAN 通道对应的电机 ID (hip/thigh/calf 顺序)
+CHANNEL_MOTOR_IDS = {
+    "can0": [1, 2, 3],
+    "can1": [4, 5, 6],
+    "can2": [7, 8, 9],
+    "can3": [10, 11, 12],
+}
+
 FAULT_NAMES = {
     0: "欠压",
     1: "驱动芯片",
@@ -803,18 +811,29 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--master-id", default="0xfd", help="主机 CAN ID, 默认 0xfd")
     parser.add_argument(
         "--ids",
-        default=",".join(str(mid) for _name, mid in DEFAULT_MOTORS),
-        help="电机 ID 列表 (逗号分隔), 按 OpenDoge 关节顺序",
+        default=None,
+        help="电机 ID 列表 (逗号分隔), 默认根据通道自动选择 (can0→1,2,3 can1→4,5,6 ...)",
     )
     return parser
+
+
+def _build_motor_list(ids: list[int]) -> list[tuple[str, int]]:
+    """根据 ID 列表构建 (名字, ID) 映射, 从 DEFAULT_MOTORS 按 ID 匹配。"""
+    name_by_id = {mid: name for name, mid in DEFAULT_MOTORS}
+    return [(name_by_id.get(mid, f"电机_{mid}"), mid) for mid in ids]
 
 
 def main() -> int:
     args = build_arg_parser().parse_args()
     master_id = int(str(args.master_id), 0)
-    ids = [int(x, 0) for x in args.ids.replace(",", " ").split()]
-    motors = [(DEFAULT_MOTORS[i][0] if i < len(DEFAULT_MOTORS) else f"电机_{i+1}", mid)
-              for i, mid in enumerate(ids)]
+    ids: list[int]
+    if args.ids is not None:
+        ids = [int(x, 0) for x in args.ids.replace(",", " ").split()]
+    else:
+        ch = args.channel.lower()
+        ids = CHANNEL_MOTOR_IDS.get(ch, [1, 2, 3])
+        print(f"自动选择通道 {ch} 的电机 ID: {ids}")
+    motors = _build_motor_list(ids)
 
     bus = El05Bus(args.channel, master_id)
     try:
