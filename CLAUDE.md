@@ -97,6 +97,80 @@ C++ deploy 通过 `runtime_io.cpp` 的 `readImuFile()` / `readCommandFile()` 以
 - 守护进程可独立重启
 - dry-run 测试可直接写入文件注入假数据
 
+### DM-IMU-L1 状态
+
+| 属性 | 值 |
+|------|-----|
+| 硬件 | DM-Tech DM-IMU-L1 |
+| USB ID | `6877:4d55` |
+| 串口 | `/dev/ttyUSBx` (自动检测) |
+| 桥接脚本 | `daemons/imu_bridge/dm_imu_bridge.py` |
+| 输出文件 | `/tmp/opendoge_imu.state` |
+| 数据格式 | `wx wy wz gx gy gz` (角速度 rad/s, projected gravity 已取反) |
+| 当前状态 | ✅ 正常运行, `gz ≈ -1.0` (竖直), gyro 噪声 < 0.02 rad/s |
+
+验证命令：
+```bash
+cat /tmp/opendoge_imu.state       # 查看实时 IMU 数据
+lsusb | grep 6877:4d55             # 确认 IMU 已连接
+```
+
+### Xbox 2.4G 手柄状态
+
+| 属性 | 值 |
+|------|-----|
+| 硬件 | 2.4G XBOX 360 For Windows (克隆 dongle) |
+| USB ID | `413d:2104` |
+| 驱动 | xboxdrv (用户态, 需剥离内核 hid-generic) |
+| 设备节点 | `/dev/input/js0` → `Xbox Gamepad (userspace driver)` |
+| 桥接脚本 | `daemons/command_bridge/xbox_command_bridge.py` |
+| 输出文件 | `/tmp/opendoge_command.state` |
+| 当前状态 | ✅ 正常运行 |
+
+**轴/按键映射** (xboxdrv 默认, 已验证):
+
+| 物理输入 | js 事件 | 功能 |
+|----------|---------|------|
+| 左摇杆 Y | axis1 | vx (前后速度) |
+| 左摇杆 X | axis0 | vy (侧向速度) |
+| 右摇杆 X | axis2 | yaw_rate (转向角速度) |
+| A | btn0 | 激活 + 位置控制模式 |
+| B | btn1 | 失能 |
+| X | btn2 | 进入 RL 推理 |
+| Y | btn3 | 退出 RL 推理 |
+| BACK | btn6 | 切换 low_gain_mode |
+| START | btn7 | 切换使能 |
+| RB | btn5 | 死手开关 (`--require-rb`) |
+
+**systemd 服务** (开机自启):
+
+```
+opendoge-xboxdrv.service   (system) → xboxdrv, Type=simple, Restart=always
+opendoge-joystick.service  (user)   → bridge, Type=simple, Restart=always
+```
+
+服务链：`opendoge-xboxdrv` → `/dev/input/js0` → `opendoge-joystick` → `/tmp/opendoge_command.state`
+
+**稳定性机制**:
+- xboxdrv 崩溃 → systemd `Restart=always`, 5s 后自动拉起
+- js0 消失 → bridge 捕获 `DeviceLostError`, 写安全中性命令, 自动重连
+- USB 热插拔 → `ExecStartPre` 等待 dongle/js0 出现 (最多 30s)
+- 无限重启次数 (`StartLimitIntervalSec=0`)
+
+日常管理：
+```bash
+systemctl status opendoge-xboxdrv              # xboxdrv 状态
+systemctl --user status opendoge-joystick      # bridge 状态
+journalctl --user -u opendoge-joystick -f      # bridge 实时日志
+watch -n 0.2 cat /tmp/opendoge_command.state   # 监控手柄命令
+sudo journalctl -u opendoge-xboxdrv -f         # xboxdrv 实时日志
+```
+
+安装/重装：
+```bash
+bash scripts/install_services.sh
+```
+
 ## 构建与测试
 
 ```bash
