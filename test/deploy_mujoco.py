@@ -13,7 +13,7 @@ deploy_mujoco.py — OpenDoge MuJoCo 仿真测试
                   RL_hip, RL_thigh, RL_calf, RR_hip, RR_thigh, RR_calf
   - 默认姿态：{0, 0.5, -1.3} (前腿), {0, 0.7, -1.3} (后腿)
   - PD 增益：kp=20, kd=0.3, safe_kd=2.0
-  - 动作缩放：action_scale=0.5
+  - 动作缩放：action_scale=0.25
   - 斜坡时长：pc_startup_ramp_s=2.0
 
 用法:
@@ -142,7 +142,7 @@ class DeployConfig:
     kp: float = 20.0
     kd: float = 0.3
     safe_kd: float = 2.0
-    action_scale: float = 0.50
+    action_scale: float = 0.25
     pc_startup_ramp_s: float = 2.0
     pc_startup_max_deviation: float = 2.0  # 趴伏→站立全程跟踪容差
 
@@ -266,11 +266,11 @@ class OpenDogeSimulator:
         # 传感器地址
         try:
             self._gyro_adr = self.model.sensor("angular-velocity").id
-            self._accel_adr = self.model.sensor("linear-acceleration").id
+            self._quat_adr = self.model.sensor("orientation").id
             self._has_sensors = True
         except Exception:
             self._gyro_adr = 0
-            self._accel_adr = 0
+            self._quat_adr = 0
             self._has_sensors = False
 
         # 渲染
@@ -318,19 +318,32 @@ class OpenDogeSimulator:
         self.data.qpos[2] = 0.05  # 趴伏 base 贴近地面
         mujoco.mj_forward(self.model, self.data)
 
+    @staticmethod
+    def _rotate_vector_by_quat(v: np.ndarray, q: np.ndarray) -> np.ndarray:
+        """用四元数 q=[w,x,y,z] 旋转向量 v: q * v * q^-1"""
+        w, x, y, z = q
+        t = 2.0 * (x * v[0] + y * v[1] + z * v[2])
+        t2 = w * w - (x * x + y * y + z * z)
+        return np.array([
+            t * x + t2 * v[0] + 2.0 * w * (y * v[2] - z * v[1]),
+            t * y + t2 * v[1] + 2.0 * w * (z * v[0] - x * v[2]),
+            t * z + t2 * v[2] + 2.0 * w * (x * v[1] - y * v[0]),
+        ])
+
     def get_imu(self) -> ImuSample:
-        """读取 IMU 传感器数据"""
+        """读取 IMU 传感器数据 — 用 framequat 计算 projected_gravity 与训练一致"""
         imu = ImuSample()
         if self._has_sensors:
             imu.angular_velocity = self.data.sensordata[
                 self._gyro_adr:self._gyro_adr + 3
             ].copy()
-            accel = self.data.sensordata[
-                self._accel_adr:self._accel_adr + 3
-            ].copy()
-            accel_norm = np.linalg.norm(accel)
-            if accel_norm > 0.01:
-                imu.projected_gravity = -accel / accel_norm
+            # 用 IMU 姿态四元数将世界系重力 [0,0,-1] 旋转到机体坐标系
+            quat = self.data.sensordata[
+                self._quat_adr:self._quat_adr + 4
+            ].copy()  # [w, x, y, z]
+            imu.projected_gravity = self._rotate_vector_by_quat(
+                np.array([0.0, 0.0, -1.0]), quat
+            )
             imu.valid = True
         return imu
 
@@ -438,6 +451,7 @@ class KeyboardHandler:
         self._pending_keys = []
         # 方向键速度命令
         self._arrow_vx = 0.0
+        self._arrow_vy = 0.0
         self._arrow_yaw = 0.0
 
     def feed_key(self, keycode: int):
@@ -461,6 +475,7 @@ class KeyboardHandler:
             self.position_control = False
             self.rl_inference = False
             self._arrow_vx = 0.0
+            self._arrow_vy = 0.0
             self._arrow_yaw = 0.0
             print(f"[KEY] 急停 estop (key={keycode})")
 
@@ -476,6 +491,7 @@ class KeyboardHandler:
             self.position_control = False
             self.rl_inference = False
             self._arrow_vx = 0.0
+            self._arrow_vy = 0.0
             self._arrow_yaw = 0.0
             print(f"[KEY] 停用 → Ready (key={keycode})")
 
@@ -493,21 +509,22 @@ class KeyboardHandler:
 
         # ── 方向键速度命令 ──────────────────────────────────────────
         elif keycode == 265:  # ↑ 前进
-            self._arrow_vx = 0.3
+            self._arrow_vx = 0.6
             print(f"[KEY] ↑ vx=+{self._arrow_vx}")
         elif keycode == 266:  # ↓ 后退
-            self._arrow_vx = -0.2
+            self._arrow_vx = -0.4
             print(f"[KEY] ↓ vx={self._arrow_vx}")
-        elif keycode == 263:  # ← 左转
-            self._arrow_yaw = 1.0
-            print(f"[KEY] ← yaw=+{self._arrow_yaw}")
-        elif keycode == 262:  # → 右转
-            self._arrow_yaw = -1.0
-            print(f"[KEY] → yaw={self._arrow_yaw}")
+        elif keycode == 263:  # ← 左移
+            self._arrow_vy = 0.3
+            print(f"[KEY] ← vy=+{self._arrow_vy}")
+        elif keycode == 262:  # → 右移
+            self._arrow_vy = -0.3
+            print(f"[KEY] → vy={self._arrow_vy}")
         elif keycode == 32:  # Space (已在上面处理, 这里重置方向)
             pass
         elif keycode == 48:  # 0 键: 停止移动
             self._arrow_vx = 0.0
+            self._arrow_vy = 0.0
             self._arrow_yaw = 0.0
             print(f"[KEY] 0 停止移动")
 
@@ -517,7 +534,7 @@ class KeyboardHandler:
         """生成 OperatorCommand — 方向键优先于静态命令"""
         cmd = OperatorCommand()
         cmd.vx = self._arrow_vx if self._arrow_vx != 0.0 else vx
-        cmd.vy = vy
+        cmd.vy = self._arrow_vy if self._arrow_vy != 0.0 else vy
         cmd.yaw_rate = self._arrow_yaw if self._arrow_yaw != 0.0 else yaw_rate
         cmd.estop = self.estop
 
@@ -763,7 +780,7 @@ class DeployController:
         if target_tick != self._last_target_tick:
             self._last_target_tick = target_tick
             for i in range(NUM_JOINTS):
-                self.last_action[i] = np.clip(self.action[i], -1.0, 1.0)
+                self.last_action[i] = self.action[i]
                 tgt = DEFAULT_POS[i] + self.last_action[i] * config.action_scale
                 tgt = np.clip(tgt, JOINT_LOWER[i], JOINT_UPPER[i])
                 self.logical_target[i] = tgt
@@ -983,7 +1000,7 @@ def main():
     print("键盘控制:")
     print("  A / Space  → 位置控制    B → 停用")
     print("  X          → RL 推理     Y → 位置控制")
-    print("  ↑ ↓        → 前进/后退   ← → → 左转/右转")
+    print("  ↑ ↓        → 前进/后退   ← → → 左移/右移")
     print("  0          → 停止移动")
     print("  Backspace  → 急停        Esc / Q → 退出")
     print("═" * 80)
