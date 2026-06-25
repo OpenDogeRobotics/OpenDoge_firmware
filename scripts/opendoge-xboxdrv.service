@@ -5,19 +5,25 @@ After=multi-user.target
 Wants=multi-user.target
 
 [Service]
-Type=forking
-# Detach kernel driver and provide /dev/input/js0 as Xbox 360 compatible.
-# Change XBOX_USB_ID via drop-in or environment override if your dongle differs.
+Type=simple
+# Wait up to 30s for the 2.4G dongle to appear on USB
+ExecStartPre=/bin/sh -c 'for i in $$(seq 1 30); do lsusb | grep -q "413d:2104" && exit 0; sleep 1; done; echo "dongle not found after 30s" >&2; exit 1'
+# Run in foreground so systemd tracks the PID directly (no --silent/--daemon).
+# Logs go to journal; use --dbus disabled to avoid spurious warnings.
 Environment=XBOX_USB_ID=413d:2104
 ExecStart=/usr/bin/xboxdrv \
     --device-by-id ${XBOX_USB_ID} \
     --type xbox360 \
     --detach-kernel-driver \
-    --silent
-# xboxdrv forks to background; if it exits early treat as failure.
-Restart=on-failure
+    --dbus disabled
+# Always restart on exit — handles clone-dongle ENODEV crashes.
+Restart=always
 RestartSec=5
-TimeoutStartSec=15
+# No limit on restart count (clone dongles can be flaky).
+StartLimitIntervalSec=0
+TimeoutStartSec=30
+# Cleanup: kill any stale xboxdrv before starting.
+ExecStopPost=-/usr/bin/killall xboxdrv 2>/dev/null || true
 
 [Install]
 WantedBy=multi-user.target

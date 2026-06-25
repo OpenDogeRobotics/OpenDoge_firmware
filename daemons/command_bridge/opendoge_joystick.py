@@ -20,6 +20,13 @@ JSIOCGNAME_128 = 0x80806A13
 EVENT_STRUCT = struct.Struct("IhBB")
 
 
+class DeviceLostError(OSError):
+    """Raised when /dev/input/js0 disappears (xboxdrv died or dongle unplugged)."""
+    def __init__(self, device: str):
+        self.device = device
+        super().__init__(errno.ENODEV, f"joystick device lost: {device}")
+
+
 @dataclasses.dataclass(frozen=True)
 class JoystickEvent:
     timestamp_ms: int
@@ -84,6 +91,10 @@ class LinuxJoystick:
             except OSError as exc:
                 if exc.errno in (errno.EAGAIN, errno.EWOULDBLOCK):
                     break
+                # ENODEV (19): xboxdrv died or dongle unplugged — surface as
+                # DeviceLost so the caller can wait and re-open js0.
+                if exc.errno == errno.ENODEV:
+                    raise DeviceLostError(self.device) from exc
                 raise
 
             if len(data) != EVENT_STRUCT.size:

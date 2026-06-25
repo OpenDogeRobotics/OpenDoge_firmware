@@ -7,53 +7,79 @@ SCRIPTS_DIR="${ROOT_DIR}/scripts"
 SYSTEMD_USER_DIR="${HOME}/.config/systemd/user"
 SYSTEMD_SYSTEM_DIR="/etc/systemd/system"
 
-# ── User service (no sudo needed) ─────────────────────────────
+XBOXDRV_SERVICE="opendoge-xboxdrv.service"
 BRIDGE_SERVICE="opendoge-joystick.service"
-BRIDGE_SRC="${SCRIPTS_DIR}/${BRIDGE_SERVICE}"
 
 echo "=== OpenDoge Service Installer ==="
 echo ""
 
-# ── 1. Joystick bridge (user service) ─────────────────────────
-echo "[1/2] Installing joystick bridge (user service) ..."
-mkdir -p "${SYSTEMD_USER_DIR}"
-cp "${BRIDGE_SRC}" "${SYSTEMD_USER_DIR}/${BRIDGE_SERVICE}"
-systemctl --user daemon-reload
-systemctl --user enable "${BRIDGE_SERVICE}"
-systemctl --user start "${BRIDGE_SERVICE}"
-echo "       Installed → ${SYSTEMD_USER_DIR}/${BRIDGE_SERVICE}"
+# ── 1. xboxdrv (system service, requires sudo) ───────────────────
+echo "[1/3] Installing xboxdrv driver (system service) ..."
+echo "      This needs sudo to install to ${SYSTEMD_SYSTEM_DIR}"
 
-# ── 2. xboxdrv (system service, requires sudo) ─────────────────
-XBOXDRV_SERVICE="opendoge-xboxdrv.service"
-XBOXDRV_SRC="${SCRIPTS_DIR}/${XBOXDRV_SERVICE}"
+if ! command -v xboxdrv &>/dev/null; then
+    echo "      [WARN] xboxdrv not found at /usr/bin/xboxdrv"
+    echo "      Install with: sudo apt install xboxdrv"
+fi
 
-echo ""
-echo "[2/2] Installing xboxdrv driver (system service — needs sudo) ..."
-if command -v sudo &>/dev/null && sudo -n true 2>/dev/null; then
-    sudo cp "${XBOXDRV_SRC}" "${SYSTEMD_SYSTEM_DIR}/${XBOXDRV_SERVICE}"
+if command -v sudo &>/dev/null; then
+    sudo cp "${SCRIPTS_DIR}/${XBOXDRV_SERVICE}" "${SYSTEMD_SYSTEM_DIR}/${XBOXDRV_SERVICE}"
     sudo systemctl daemon-reload
     sudo systemctl enable "${XBOXDRV_SERVICE}"
-    sudo systemctl start "${XBOXDRV_SERVICE}"
-    echo "       Installed → ${SYSTEMD_SYSTEM_DIR}/${XBOXDRV_SERVICE}"
+    echo "      Installed → ${SYSTEMD_SYSTEM_DIR}/${XBOXDRV_SERVICE}"
+    echo "      Starting ..."
+    sudo systemctl restart "${XBOXDRV_SERVICE}" || echo "      [WARN] xboxdrv failed to start (dongle not plugged in?)"
 else
-    echo "       [SKIP] No passwordless sudo — install manually:"
-    echo "         sudo cp ${XBOXDRV_SRC} ${SYSTEMD_SYSTEM_DIR}/"
-    echo "         sudo systemctl enable --now ${XBOXDRV_SERVICE}"
-    echo ""
-    echo "       Or start xboxdrv manually before the bridge:"
-    echo "         sudo xboxdrv --device-by-id 413d:2104 --type xbox360 --detach-kernel-driver --silent"
+    echo "      [SKIP] sudo not available"
+    exit 1
 fi
 
-# ── Enable lingering so user services start at boot ────────────
+# ── 2. Wait for js0 ──────────────────────────────────────────────
+echo ""
+echo "[2/3] Waiting for /dev/input/js0 (up to 15s) ..."
+for i in $(seq 1 30); do
+    if [ -e /dev/input/js0 ]; then
+        echo "      /dev/input/js0 ready ($(cat /sys/class/input/js0/device/name 2>/dev/null))"
+        break
+    fi
+    sleep 0.5
+done
+if [ ! -e /dev/input/js0 ]; then
+    echo "      [WARN] /dev/input/js0 did not appear — check:"
+    echo "        sudo systemctl status opendoge-xboxdrv"
+    echo "        lsusb | grep 413d"
+fi
+
+# ── 3. Joystick bridge (user service) ────────────────────────────
+echo ""
+echo "[3/3] Installing joystick bridge (user service) ..."
+mkdir -p "${SYSTEMD_USER_DIR}"
+cp "${SCRIPTS_DIR}/${BRIDGE_SERVICE}" "${SYSTEMD_USER_DIR}/${BRIDGE_SERVICE}"
+systemctl --user daemon-reload
+systemctl --user enable "${BRIDGE_SERVICE}"
+systemctl --user restart "${BRIDGE_SERVICE}" || echo "      [WARN] bridge failed to start (no js0?)"
+echo "      Installed → ${SYSTEMD_USER_DIR}/${BRIDGE_SERVICE}"
+
+# ── Enable lingering so user services start at boot ──────────────
 if command -v loginctl &>/dev/null; then
     loginctl enable-linger "$(whoami)" 2>/dev/null || true
+    echo "      Lingering enabled for $(whoami)"
 fi
 
+# ── Summary ──────────────────────────────────────────────────────
 echo ""
-echo "=== Done ==="
-echo "Commands:"
-echo "  status:    systemctl --user status opendoge-joystick"
-echo "  logs:      journalctl --user -u opendoge-joystick -f"
-echo "  stop:      systemctl --user stop opendoge-joystick"
-echo "  restart:   systemctl --user restart opendoge-joystick"
-echo "  disable:   systemctl --user disable opendoge-joystick"
+echo "=== Installation Complete ==="
+echo ""
+echo "Service status:"
+echo "  systemctl status opendoge-xboxdrv           # xboxdrv (system)"
+echo "  systemctl --user status opendoge-joystick   # bridge (user)"
+echo ""
+echo "Logs:"
+echo "  journalctl -u opendoge-xboxdrv -f           # xboxdrv"
+echo "  journalctl --user -u opendoge-joystick -f   # bridge"
+echo ""
+echo "Disable:"
+echo "  sudo systemctl disable opendoge-xboxdrv"
+echo "  systemctl --user disable opendoge-joystick"
+echo ""
+echo "Verify with: watch -n 0.2 cat /tmp/opendoge_command.state"
