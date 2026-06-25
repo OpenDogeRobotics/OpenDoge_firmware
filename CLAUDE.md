@@ -134,14 +134,42 @@ python3 bringup/scan_motors_readonly.py
 - PD 增益逻辑 (阻尼/斜坡/Active/LowGain)
 - `last_action` 的 clamp 语义
 
-### 5. 电机映射 (不可变)
+### 5. 电机 ID 映射 (不可变)
+
+12 个 EL05 电机分布在 4 条 CAN 总线上，每条总线挂载一条腿的 3 个关节。
+电机在腿上从近端到远端依次为 **hip → thigh → calf**。
+
+| 数组索引 | 关节名 | CAN 总线 | 电机 ID | 腿上位置 | 默认站立角 | 轴 |
+|---------|--------|---------|--------|---------|-----------|-----|
+| 0 | `FL_hip_joint` | can0 | 1 | FL Hip (髋) | 0.0 | X (roll) |
+| 1 | `FL_thigh_joint` | can0 | 2 | FL Thigh (大腿) | 0.5 | Y (pitch) |
+| 2 | `FL_calf_joint` | can0 | 3 | FL Calf (小腿) | -1.3 | Y (pitch) |
+| 3 | `FR_hip_joint` | can1 | 4 | FR Hip (髋) | 0.0 | X (roll) |
+| 4 | `FR_thigh_joint` | can1 | 5 | FR Thigh (大腿) | 0.5 | Y (pitch) |
+| 5 | `FR_calf_joint` | can1 | 6 | FR Calf (小腿) | -1.3 | Y (pitch) |
+| 6 | `RL_hip_joint` | can2 | 7 | RL Hip (髋) | 0.0 | X (roll) |
+| 7 | `RL_thigh_joint` | can2 | 8 | RL Thigh (大腿) | 0.7 | Y (pitch) |
+| 8 | `RL_calf_joint` | can2 | 9 | RL Calf (小腿) | -1.3 | Y (pitch) |
+| 9 | `RR_hip_joint` | can3 | 10 | RR Hip (髋) | 0.0 | X (roll) |
+| 10 | `RR_thigh_joint` | can3 | 11 | RR Thigh (大腿) | 0.7 | Y (pitch) |
+| 11 | `RR_calf_joint` | can3 | 12 | RR Calf (小腿) | -1.3 | Y (pitch) |
+
+**物理接线对应：**
+- CAN 口 0 → 左前腿 (FL) → 电机 1/2/3
+- CAN 口 1 → 右前腿 (FR) → 电机 4/5/6
+- CAN 口 2 → 左后腿 (RL) → 电机 7/8/9
+- CAN 口 3 → 右后腿 (RR) → 电机 10/11/12
+
+**ONNX 策略输出 → 电机 ID 映射：**
+ONNX 推理输出是 12 维数组，**无任何重排序**，直接按索引 1:1 对应：
 
 ```
-can0: FL_hip/1, FL_thigh/2, FL_calf/3
-can1: FR_hip/4, FR_thigh/5, FR_calf/6
-can2: RL_hip/7, RL_thigh/8, RL_calf/9
-can3: RR_hip/10, RR_thigh/11, RR_calf/12
+ONNX output[i] → action[i] → target[i] → motor_id = i+1
 ```
+
+即 ONNX 输出的第 0 维控制电机 1 (FL_hip)，第 1 维控制电机 2 (FL_thigh)，以此类推。
+
+**设置电机 ID 时需要将出厂默认 127 逐个改为表中 Motor ID。** 每条 CAN 总线上的 3 个电机按物理位置 (hip→thigh→calf) 分别设为 1-3/4-6/7-9/10-12。
 
 ### 6. 默认站立姿态 (必须匹配训练 keyframe)
 
