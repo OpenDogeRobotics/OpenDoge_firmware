@@ -1,47 +1,51 @@
 #!/usr/bin/env python3
 """
-只读电机扫描工具 — 不发送任何控制指令 (不使能、不置零、不写参数)。
+EL05 只读电机扫描工具 — 不发送任何控制指令 (不使能、不置零、不写参数)。
 
-对每条 CAN 总线遍历全部 12 个电机 ID，使用 COMM_READ_PARAM (0x11)
-查询机械位置 (0x7019)、速度 (0x701B) 和故障状态 (0x3022)。
-
-参考: mi_motor_demo_TB.py (协议层), el05_motor_menu.py (参数索引)
+协议: EL05 / RobStride 29-bit 扩展 CAN 帧
+参考: docs/EL05使用说明书2600428.pdf, el05_motor_menu.py
 
 用法:
-    python3 scan_motors_readonly.py [--channel can0] [--ids 1,2,3] [--timeout 0.3]
+    python3 scan_motors_readonly.py                     # 扫描全部 4 通道
+    python3 scan_motors_readonly.py --channel can3      # 只扫 can3
+    python3 scan_motors_readonly.py --all-ids           # 扫描 ID 1-127 (含出厂默认)
+    python3 scan_motors_readonly.py --listen 3          # 扫描后额外被动监听 3 秒
 """
 
 from __future__ import annotations
 
 import argparse
+import socket
 import struct
+import select
+import subprocess
 import sys
 import time
 from typing import Optional
 
-try:
-    import can
-except ImportError:
-    print("需要 python-can: pip install python-can")
-    sys.exit(1)
-
-
 # ============================================================
-# EL05 / RobStride 协议常量 (与 mi_motor_demo_TB.py 一致)
+# EL05 / RobStride 协议常量
 # ============================================================
-COMM_READ_PARAM = 0x11
+CAN_EFF_FLAG = 0x80000000
+CAN_EFF_MASK = 0x1FFFFFFF
+
+COMM_GET_DEVICE_ID = 0x00
 COMM_STATUS = 0x02
+COMM_READ_PARAM = 0x11
 
+IDX_RUN_MODE = 0x7005
 IDX_MECH_POS = 0x7019
 IDX_MECH_VEL = 0x701B
 IDX_FAULT_STA = 0x3022
 
 P_MIN, P_MAX = -12.57, 12.57
 V_MIN, V_MAX = -50.0, 50.0
+T_MIN, T_MAX = -6.0, 6.0
 
 MASTER_ID = 0xFD
+FACTORY_DEFAULT_ID = 127  # 新电机出厂 CAN ID
 
-# 电机编号 → 关节名
+# OpenDoge 标准电机映射
 MOTOR_NAMES = {
     1: "FL_hip", 2: "FL_thigh", 3: "FL_calf",
     4: "FR_hip", 5: "FR_thigh", 6: "FR_calf",
@@ -49,293 +53,390 @@ MOTOR_NAMES = {
     10: "RR_hip", 11: "RR_thigh", 12: "RR_calf",
 }
 
-# CAN 通道 → 腿名
 CHANNEL_LEG = {"can0": "FL(左前)", "can1": "FR(右前)", "can2": "RL(左后)", "can3": "RR(右后)"}
 
+RUN_MODE_NAMES = {0: "运控", 1: "位置", 2: "速度", 3: "电流"}
 
+
+# ============================================================
+# CAN 帧编解码 (与 el05_socketcan.cpp 一致)
+# ============================================================
 def build_ext_id(comm_type: int, data2: int, target_id: int) -> int:
-    """与 el05_socketcan.cpp buildExtId 一致"""
     return ((comm_type & 0x1F) << 24) | ((data2 & 0xFFFF) << 8) | (target_id & 0xFF)
 
 
 def parse_ext_id(can_id: int) -> tuple[int, int, int]:
-    raw = can_id & 0x1FFFFFFF
+    raw = can_id & CAN_EFF_MASK
     return (raw >> 24) & 0x1F, (raw >> 8) & 0xFFFF, raw & 0xFF
 
 
-def uint_to_float(value: int, low: float, high: float, bits: int = 16) -> float:
-    span = high - low
-    return float(value) * span / ((1 << bits) - 1) + low
+def pack_frame(can_id: int, data: list[int]) -> bytes:
+    payload = bytes(data[:8]).ljust(8, b"\x00")
+    return struct.pack("=IB3x8s", can_id | CAN_EFF_FLAG, len(payload), payload)
 
 
-def parse_status_frame(can_id: int, data: bytes) -> Optional[dict]:
-    """解析 COMM_STATUS (0x02) 反馈帧"""
-    comm_type, data2, _target = parse_ext_id(can_id)
-    if comm_type != COMM_STATUS or len(data) < 8:
+def unpack_frame(packet: bytes) -> tuple[int, bytes]:
+    can_id, can_dlc, payload = struct.unpack("=IB3x8s", packet)
+    return can_id & CAN_EFF_MASK, payload[:can_dlc]
+
+
+# ============================================================
+# CAN 总线操作
+# ============================================================
+def check_channel_state(channel: str) -> Optional[str]:
+    """检查 CAN 通道状态, 返回状态字符串或 None"""
+    try:
+        result = subprocess.run(
+            ["ip", "-details", "link", "show", channel],
+            capture_output=True, text=True
+        )
+        output = result.stdout
+        if "state DOWN" in output:
+            return "DOWN"
+        if "ERROR-PASSIVE" in output:
+            return "ERROR-PASSIVE"
+        if "ERROR-ACTIVE" in output or "state UP" in output:
+            return "OK"
+    except Exception:
+        pass
+    return None
+
+
+def open_channel(channel: str) -> socket.socket:
+    """打开 CAN raw socket"""
+    sock = socket.socket(socket.AF_CAN, socket.SOCK_RAW, socket.CAN_RAW)
+    sock.bind((channel,))
+    sock.setblocking(False)
+    return sock
+
+
+def drain(sock: socket.socket) -> None:
+    """清空接收缓冲区"""
+    while True:
+        try:
+            sock.recv(16)
+        except BlockingIOError:
+            break
+        except Exception:
+            break
+
+
+def send(sock: socket.socket, comm_type: int, motor_id: int, data: list[int]) -> None:
+    """发送 CAN 扩展帧"""
+    can_id = build_ext_id(comm_type, MASTER_ID, motor_id)
+    sock.send(pack_frame(can_id, data))
+
+
+def recv(sock: socket.socket, timeout: float = 0.0) -> Optional[tuple[int, bytes]]:
+    """非阻塞接收 CAN 帧"""
+    ready, _, _ = select.select([sock], [], [], timeout)
+    if not ready:
         return None
-    motor_id = data2 & 0xFF
-    fault = (data2 >> 8) & 0x3F
-    mode = (data2 >> 14) & 0x03
-    pos_u = (data[0] << 8) | data[1]
-    vel_u = (data[2] << 8) | data[3]
-    trq_u = (data[4] << 8) | data[5]
-    tmp_u = (data[6] << 8) | data[7]
-    return {
-        "motor_id": motor_id,
-        "position": uint_to_float(pos_u, P_MIN, P_MAX),
-        "velocity": uint_to_float(vel_u, V_MIN, V_MAX),
-        "torque": uint_to_float(trq_u, -6.0, 6.0),
-        "temperature": tmp_u * 0.1,
-        "fault": fault,
-        "mode": mode,
-        "source": "status_frame",
-    }
+    try:
+        packet = sock.recv(16)
+        if len(packet) >= 16:
+            return unpack_frame(packet)
+    except Exception:
+        pass
+    return None
 
 
-def parse_read_param_response(can_id: int, data: bytes, expected_index: int) -> Optional[dict]:
-    """解析 COMM_READ_PARAM (0x11) 回复"""
-    comm_type, data2, _target = parse_ext_id(can_id)
-    if comm_type != COMM_READ_PARAM or len(data) < 8:
-        return None
-    motor_id = data2 & 0xFF
-    resp_index = data[0] | (data[1] << 8)
-    if resp_index != expected_index:
-        return None
-    raw_bytes = bytes(data[4:8])
-    return {
-        "motor_id": motor_id,
-        "index": resp_index,
-        "raw_bytes": raw_bytes,
-        "float_value": struct.unpack("<f", raw_bytes)[0],
-        "uint32_value": int.from_bytes(raw_bytes, "little", signed=False),
-    }
-
-
-def scan_motor(bus: can.BusABC, motor_id: int, timeout: float) -> dict:
+# ============================================================
+# 电机发现与查询
+# ============================================================
+def discover_motors(sock: socket.socket, timeout: float = 1.0) -> set[int]:
     """
-    只读查询一个电机 — 发送 COMM_READ_PARAM 读位置、速度、故障码。
-    不发送任何控制指令。
+    用 COMM_GET_DEVICE_ID (0x00) 广播发现总线上的所有电机。
+    这是纯只读操作, 不修改电机状态。
     """
+    found = set()
+
+    # 广播
+    send(sock, COMM_GET_DEVICE_ID, 0xFF, [0] * 8)
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        frame = recv(sock, max(0.01, deadline - time.monotonic()))
+        if frame is None:
+            continue
+        can_id, _payload = frame
+        comm_type, data2, _ = parse_ext_id(can_id)
+        if comm_type == COMM_GET_DEVICE_ID:
+            motor_id = data2 & 0xFF
+            found.add(motor_id)
+
+    return found
+
+
+def read_param_float(sock: socket.socket, motor_id: int, index: int,
+                     timeout: float = 0.3) -> Optional[float]:
+    """读取 float 类型参数 (COMM_READ_PARAM 0x11)"""
+    data = [index & 0xFF, (index >> 8) & 0xFF, 0, 0, 0, 0, 0, 0]
+    send(sock, COMM_READ_PARAM, motor_id, data)
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        frame = recv(sock, max(0.0, deadline - time.monotonic()))
+        if frame is None:
+            break
+        can_id, payload = frame
+        comm_type, data2, _ = parse_ext_id(can_id)
+        resp_motor_id = data2 & 0xFF
+        if comm_type != COMM_READ_PARAM or resp_motor_id != motor_id or len(payload) < 8:
+            continue
+        resp_index = payload[0] | (payload[1] << 8)
+        if resp_index != index:
+            continue
+        return struct.unpack("<f", payload[4:8])[0]
+    return None
+
+
+def read_param_uint32(sock: socket.socket, motor_id: int, index: int,
+                      timeout: float = 0.3) -> Optional[int]:
+    """读取 uint32 类型参数"""
+    data = [index & 0xFF, (index >> 8) & 0xFF, 0, 0, 0, 0, 0, 0]
+    send(sock, COMM_READ_PARAM, motor_id, data)
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        frame = recv(sock, max(0.0, deadline - time.monotonic()))
+        if frame is None:
+            break
+        can_id, payload = frame
+        comm_type, data2, _ = parse_ext_id(can_id)
+        resp_motor_id = data2 & 0xFF
+        if comm_type != COMM_READ_PARAM or resp_motor_id != motor_id or len(payload) < 8:
+            continue
+        resp_index = payload[0] | (payload[1] << 8)
+        if resp_index != index:
+            continue
+        return int.from_bytes(payload[4:8], "little", signed=False)
+    return None
+
+
+def read_motor_status(sock: socket.socket, motor_id: int, timeout: float = 0.3) -> dict:
+    """读取电机完整状态 (只读)"""
     result = {
         "motor_id": motor_id,
+        "run_mode": None,
         "position": None,
         "velocity": None,
         "fault_sta": None,
-        "fault_bits": None,
-        "errors": [],
     }
 
-    # --- 读机械位置 (0x7019) ---
-    index = IDX_MECH_POS
-    data_bytes = [index & 0xFF, (index >> 8) & 0xFF, 0, 0, 0, 0, 0, 0]
-    can_id = build_ext_id(COMM_READ_PARAM, MASTER_ID, motor_id)
-    msg = can.Message(arbitration_id=can_id, data=data_bytes, is_extended_id=True)
-
-    try:
-        bus.send(msg)
-    except Exception as e:
-        result["errors"].append(f"send err: {e}")
-        return result
-
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        try:
-            reply = bus.recv(timeout=max(0.0, deadline - time.monotonic()))
-        except Exception:
-            continue
-        if reply is None:
-            break
-        parsed = parse_read_param_response(reply.arbitration_id, reply.data, IDX_MECH_POS)
-        if parsed and parsed["motor_id"] == motor_id:
-            result["position"] = parsed["float_value"]
-            break
-
-    # --- 读速度 (0x701B) ---
-    index = IDX_MECH_VEL
-    data_bytes = [index & 0xFF, (index >> 8) & 0xFF, 0, 0, 0, 0, 0, 0]
-    can_id = build_ext_id(COMM_READ_PARAM, MASTER_ID, motor_id)
-    msg = can.Message(arbitration_id=can_id, data=data_bytes, is_extended_id=True)
-
-    try:
-        bus.send(msg)
-    except Exception as e:
-        result["errors"].append(f"vel send err: {e}")
-        return result
-
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        try:
-            reply = bus.recv(timeout=max(0.0, deadline - time.monotonic()))
-        except Exception:
-            continue
-        if reply is None:
-            break
-        parsed = parse_read_param_response(reply.arbitration_id, reply.data, IDX_MECH_VEL)
-        if parsed and parsed["motor_id"] == motor_id:
-            result["velocity"] = parsed["float_value"]
-            break
-
-    # --- 读故障状态 (0x3022) ---
-    index = IDX_FAULT_STA
-    data_bytes = [index & 0xFF, (index >> 8) & 0xFF, 0, 0, 0, 0, 0, 0]
-    can_id = build_ext_id(COMM_READ_PARAM, MASTER_ID, motor_id)
-    msg = can.Message(arbitration_id=can_id, data=data_bytes, is_extended_id=True)
-
-    try:
-        bus.send(msg)
-    except Exception as e:
-        result["errors"].append(f"fault send err: {e}")
-        return result
-
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        try:
-            reply = bus.recv(timeout=max(0.0, deadline - time.monotonic()))
-        except Exception:
-            continue
-        if reply is None:
-            break
-        parsed = parse_read_param_response(reply.arbitration_id, reply.data, IDX_FAULT_STA)
-        if parsed and parsed["motor_id"] == motor_id:
-            result["fault_sta"] = parsed["uint32_value"]
-            result["fault_bits"] = [b for b in range(32) if parsed["uint32_value"] & (1 << b)]
-            break
+    result["run_mode"] = read_param_float(sock, motor_id, IDX_RUN_MODE, timeout)
+    result["position"] = read_param_float(sock, motor_id, IDX_MECH_POS, timeout)
+    result["velocity"] = read_param_float(sock, motor_id, IDX_MECH_VEL, timeout)
+    result["fault_sta"] = read_param_uint32(sock, motor_id, IDX_FAULT_STA, timeout)
 
     return result
 
 
-def listen_status(bus: can.BusABC, duration: float, target_ids: set) -> list[dict]:
-    """被动监听 COMM_STATUS 反馈帧 (电机运行时会周期性发送)"""
+def listen_status_frames(sock: socket.socket, target_ids: set[int],
+                         duration: float) -> list[dict]:
+    """被动监听 COMM_STATUS (0x02) 反馈帧"""
     results = []
     deadline = time.monotonic() + duration
     while time.monotonic() < deadline:
-        try:
-            reply = bus.recv(timeout=max(0.0, deadline - time.monotonic()))
-        except Exception:
-            continue
-        if reply is None:
+        frame = recv(sock, max(0.0, deadline - time.monotonic()))
+        if frame is None:
             break
-        status = parse_status_frame(reply.arbitration_id, reply.data)
-        if status and status["motor_id"] in target_ids:
-            results.append(status)
+        can_id, payload = frame
+        comm_type, data2, _ = parse_ext_id(can_id)
+        if comm_type != COMM_STATUS or len(payload) < 8:
+            continue
+        motor_id = data2 & 0xFF
+        if motor_id not in target_ids:
+            continue
+        fault = (data2 >> 8) & 0x3F
+        mode = (data2 >> 14) & 0x03
+        pos_u = (payload[0] << 8) | payload[1]
+        vel_u = (payload[2] << 8) | payload[3]
+        trq_u = (payload[4] << 8) | payload[5]
+        tmp_u = (payload[6] << 8) | payload[7]
+        pos = pos_u * (P_MAX - P_MIN) / 65535.0 + P_MIN
+        vel = vel_u * (V_MAX - V_MIN) / 65535.0 + V_MIN
+        trq = trq_u * (T_MAX - T_MIN) / 65535.0 + T_MIN
+        results.append({
+            "motor_id": motor_id,
+            "position": pos,
+            "velocity": vel,
+            "torque": trq,
+            "temperature": tmp_u * 0.1,
+            "fault": fault,
+            "mode": mode,
+        })
     return results
 
 
-def print_result(channel: str, r: dict) -> None:
-    name = MOTOR_NAMES.get(r["motor_id"], f"id_{r['motor_id']}")
-    pos_str = f"{r['position']:+.4f} rad" if r["position"] is not None else "N/A"
-    vel_str = f"{r['velocity']:+.3f} rad/s" if r["velocity"] is not None else "N/A"
-    fault_str = f"0x{r['fault_sta']:08X}" if r["fault_sta"] is not None else "N/A"
-    bits_str = f" [{','.join(f'b{b}' for b in r['fault_bits'])}]" if r.get("fault_bits") else ""
-
-    if r["position"] is None and r["velocity"] is None and r["fault_sta"] is None:
-        # 无响应
-        print(f"  [{channel}] {name:>10s}  id={r['motor_id']:02d}  ⛔ 无响应")
-    else:
-        status = "✅" if not r["errors"] else "⚠️"
-        print(f"  [{channel}] {name:>10s}  id={r['motor_id']:02d}  {status}  pos={pos_str}  vel={vel_str}")
-        if r["fault_sta"] and r["fault_sta"] != 0:
-            print(f"           ⚡ FAULT: {fault_str}{bits_str}")
-        elif r["fault_sta"] == 0:
-            print(f"           故障: 无")
+# ============================================================
+# 输出
+# ============================================================
+def motor_label(motor_id: int) -> str:
+    if motor_id in MOTOR_NAMES:
+        return MOTOR_NAMES[motor_id]
+    if motor_id == FACTORY_DEFAULT_ID:
+        return f"ID_{motor_id}(出厂)"
+    return f"ID_{motor_id}"
 
 
-def main():
-    parser = argparse.ArgumentParser(description="只读电机扫描 — 不发送任何控制指令")
-    parser.add_argument("--channels", default="can0,can1,can2,can3",
-                        help="CAN 通道列表, 逗号分隔 (默认 can0,can1,can2,can3)")
-    parser.add_argument("--ids", default="1,2,3,4,5,6,7,8,9,10,11,12",
-                        help="电机 ID 列表, 逗号分隔")
+def print_motor(channel: str, motor_id: int, status: dict) -> None:
+    """打印单个电机状态"""
+    name = motor_label(motor_id)
+    pos = status.get("position")
+    vel = status.get("velocity")
+    mode = status.get("run_mode")
+    fault = status.get("fault_sta")
+
+    pos_str = f"{pos:+.4f} rad" if pos is not None else "N/A"
+    vel_str = f"{vel:+.3f} rad/s" if vel is not None else "N/A"
+    mode_str = RUN_MODE_NAMES.get(int(mode), str(mode)) if mode is not None else "?"
+    fault_icon = "⚡" if (fault and fault != 0) else "✅"
+
+    extra = ""
+    if motor_id == FACTORY_DEFAULT_ID:
+        extra = " ⚠️ 需要改为1-12"
+    elif motor_id not in MOTOR_NAMES:
+        extra = " ⚠️ 非标准ID"
+
+    print(f"  [{channel}] {name:>14s}  pos={pos_str}  vel={vel_str}  "
+          f"mode={mode_str}  fault={fault_icon}{extra}")
+
+
+# ============================================================
+# 主入口
+# ============================================================
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="EL05 只读电机扫描 — COMM_GET_DEVICE_ID + COMM_READ_PARAM, 不发送控制指令"
+    )
+    parser.add_argument("--channel", "-c", default=None,
+                        help="仅扫描指定通道 (如 can3)")
+    parser.add_argument("--all-ids", action="store_true",
+                        help="扫描 ID 1-127 (含出厂默认), 默认仅扫描 1-12")
+    parser.add_argument("--ids", default=None,
+                        help="自定义电机 ID 列表, 逗号分隔")
     parser.add_argument("--timeout", type=float, default=0.3,
-                        help="每个查询超时 (秒)")
+                        help="单个参数读取超时 (秒, 默认 0.3)")
     parser.add_argument("--listen", type=float, default=0,
-                        help="额外被动监听 N 秒 (捕获电机主动上报的状态帧)")
-    parser.add_argument("--single", action="store_true",
-                        help="单次: 只查第一个可用通道, 找到电机就停")
+                        help="扫描后额外被动监听 N 秒")
+    parser.add_argument("--skip-bad", action="store_true", default=True,
+                        help="跳过 ERROR-PASSIVE/DOWN 通道 (默认)")
     args = parser.parse_args()
 
-    channels = [c.strip() for c in args.channels.split(",") if c.strip()]
-    motor_ids = [int(x.strip()) for x in args.ids.split(",") if x.strip()]
+    channels = [args.channel] if args.channel else ["can3", "can2", "can1", "can0"]
 
-    print("=" * 72)
-    print("OpenDoge 只读电机扫描 — 只查询参数, 不发送控制指令")
-    print(f"通道: {channels}  电机: {motor_ids}  超时: {args.timeout}s")
-    print("=" * 72)
+    if args.ids:
+        target_ids = [int(x.strip()) for x in args.ids.split(",") if x.strip()]
+    elif args.all_ids:
+        target_ids = list(range(1, 128))
+    else:
+        target_ids = list(range(1, 13))
 
-    found_any = False
-    all_results = []
+    print("=" * 65)
+    print("OpenDoge EL05 只读电机扫描")
+    print(f"通道: {channels}  目标 ID: {min(target_ids)}-{max(target_ids)}  超时: {args.timeout}s")
+    print("=" * 65)
+
+    all_found = {}
+    any_found = False
 
     for channel in channels:
-        leg_name = CHANNEL_LEG.get(channel, "?")
-        print(f"\n--- {channel} ({leg_name}) ---")
+        state = check_channel_state(channel)
+        leg = CHANNEL_LEG.get(channel, channel)
 
-        try:
-            bus = can.interface.Bus(bustype="socketcan", channel=channel, bitrate=1000000)
-        except Exception as e:
-            print(f"  ⛔ 无法打开 {channel}: {e}")
+        if state is None:
+            print(f"\n[{channel}] {leg}: 不可用")
+            continue
+        if state in ("DOWN", "ERROR-PASSIVE"):
+            print(f"\n[{channel}] {leg}: {state} — 跳过")
             continue
 
+        sock = open_channel(channel)
         try:
-            channel_has_motor = False
+            drain(sock)
 
-            # 扫描该通道上所有请求的电机 ID
-            ids_on_channel = [
-                mid for mid in motor_ids
-                if channel == "can0" and mid in (1, 2, 3)
-                or channel == "can1" and mid in (4, 5, 6)
-                or channel == "can2" and mid in (7, 8, 9)
-                or channel == "can3" and mid in (10, 11, 12)
-            ]
+            # 第一步: 广播发现
+            print(f"\n[{channel}] {leg} ({state}) — 广播发现...")
+            discovered = discover_motors(sock, timeout=1.5)
 
-            for motor_id in ids_on_channel:
-                result = scan_motor(bus, motor_id, args.timeout)
-                all_results.append(result)
-                print_result(channel, result)
-                if result["position"] is not None:
-                    channel_has_motor = True
-                    found_any = True
+            # 第二步: 如果没有广播响应, 逐 ID 查询
+            if not discovered:
+                print(f"  广播无响应, 逐 ID 扫描 {min(target_ids)}-{max(target_ids)}...")
+                for mid in target_ids:
+                    send(sock, COMM_GET_DEVICE_ID, mid, [0] * 8)
+                    frame = recv(sock, 0.05)
+                    if frame:
+                        can_id, _ = frame
+                        comm_type, data2, _ = parse_ext_id(can_id)
+                        if comm_type == COMM_GET_DEVICE_ID:
+                            discovered.add(data2 & 0xFF)
 
-            # 可选: 被动监听
-            if args.listen > 0 and channel_has_motor:
-                print(f"\n  ... 监听 {args.listen}s (被动接收状态帧) ...")
-                statuses = listen_status(bus, args.listen, set(ids_on_channel))
+            if not discovered:
+                print(f"  无电机响应")
+                continue
+
+            print(f"  发现 {len(discovered)} 个电机: {sorted(discovered)}")
+
+            # 第三步: 读取每个电机的详细状态
+            channel_found = {}
+            for mid in sorted(discovered):
+                drain(sock)
+                status = read_motor_status(sock, mid, args.timeout)
+                if status["position"] is not None or status["run_mode"] is not None:
+                    channel_found[mid] = status
+                    print_motor(channel, mid, status)
+                else:
+                    print(f"  [{channel}] {motor_label(mid):>14s}  发现但无法读取参数")
+
+            # 第四步: 可选被动监听
+            if args.listen > 0 and channel_found:
+                print(f"\n  ... 被动监听 {args.listen}s ...")
+                statuses = listen_status_frames(sock, set(channel_found.keys()), args.listen)
                 for s in statuses:
-                    name = MOTOR_NAMES.get(s["motor_id"], f"id_{s['motor_id']}")
-                    print(f"  📡 {name} id={s['motor_id']:02d}  "
-                          f"pos={s['position']:+.4f}  vel={s['velocity']:+.3f}  "
-                          f"tau={s['torque']:+.3f}  temp={s['temperature']:.1f}°C  "
-                          f"mode={s['mode']}  fault=0x{s['fault']:02X}")
+                    name = motor_label(s["motor_id"])
+                    print(f"  📡 {name:>14s}  pos={s['position']:+.4f}  "
+                          f"vel={s['velocity']:+.3f}  tau={s['torque']:+.3f}  "
+                          f"temp={s['temperature']:.1f}°C  "
+                          f"mode={RUN_MODE_NAMES.get(s['mode'], str(s['mode']))}")
 
-            if args.single and channel_has_motor:
-                break
+            all_found[channel] = channel_found
+            any_found = True
 
         finally:
-            bus.shutdown()
+            sock.close()
 
     # 汇总
-    print("\n" + "=" * 72)
-    responding = [r for r in all_results if r["position"] is not None]
-    no_response = [r for r in all_results if r["position"] is None]
-    faults = [r for r in all_results if r.get("fault_sta") and r["fault_sta"] != 0]
+    print("\n" + "=" * 65)
+    total = sum(len(v) for v in all_found.values())
+    print(f"扫描完成: {total} 个电机在线")
 
-    print(f"扫描完成: {len(responding)}/{len(all_results)} 电机响应")
-    if no_response:
-        names = [MOTOR_NAMES.get(r['motor_id'], str(r['motor_id'])) for r in no_response]
-        print(f"无响应: {', '.join(names)}")
-    if faults:
-        print(f"带故障: {len(faults)} 个")
-        for r in faults:
-            name = MOTOR_NAMES.get(r["motor_id"], str(r["motor_id"]))
-            bits = ",".join(f"b{b}" for b in r.get("fault_bits", []))
-            print(f"  {name}: 0x{r['fault_sta']:08X} [{bits}]")
-    if not found_any:
-        print("\n💡 提示: 如果没有电机响应, 请检查:")
-        print("   1. 电机是否上电 (24V)")
-        print("   2. CAN 总线接线是否正确")
-        print("   3. 终端电阻是否在位 (120Ω)")
-        print("   4. 电机 ID 是否与预期一致")
+    if total > 0:
+        # 检查非标准 ID
+        nonstandard = []
+        for ch, motors in all_found.items():
+            for mid in motors:
+                if mid not in MOTOR_NAMES:
+                    nonstandard.append((ch, mid))
+        if nonstandard:
+            print(f"\n⚠️  {len(nonstandard)} 个电机使用非标准 ID (出厂默认):")
+            for ch, mid in nonstandard:
+                print(f"  [{ch}] ID={mid} — 需用 EDULITE-TOOL (Windows) 改为标准 ID")
+                if ch in CHANNEL_LEG:
+                    # 提示该通道对应的标准 ID
+                    ch_ids = {
+                        "can0": (1, 2, 3), "can1": (4, 5, 6),
+                        "can2": (7, 8, 9), "can3": (10, 11, 12),
+                    }
+                    print(f"       → 应改为 {ch_ids.get(ch, ())} 之一")
+    else:
+        print("\n💡 所有通道无电机响应. 请检查:")
+        print("   1. 电机 24V 供电是否接通")
+        print("   2. CAN 总线终端电阻 (120Ω)")
+        print("   3. USB Hub 是否带外部供电")
+        print("   4. 使用 --all-ids 扫描完整范围 (1-127)")
 
-    return 0 if found_any else 1
+    return 0 if any_found else 1
 
 
 if __name__ == "__main__":

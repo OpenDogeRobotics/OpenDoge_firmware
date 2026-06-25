@@ -37,7 +37,23 @@ OpenDoge_firmware/
 
 ## 核心不变量
 
-### 1. EL05 协议一致性
+### 1. 电机类型
+
+**全部 12 个关节使用灵足 EL05 (RobStride) 准直驱电机模组**，6 N·m 版本。
+
+| 属性 | 值 |
+|------|-----|
+| 制造商 | 北京灵足时代科技有限公司 (robstride.com) |
+| 手册 | `docs/EL05使用说明书2600428.pdf` |
+| CAN 协议 | 29-bit 扩展帧, 私有 RobStride 协议 (非 CANopen) |
+| 默认波特率 | 1 Mbps |
+| 出厂默认 CAN ID | **127** (0x7F) — 接入前必须改为 1-12 |
+| 上位机软件 | EDULITE-TOOL (Windows, 用于改 ID/升级固件) |
+
+> ⚠️ `bringup/usb2can/mi_motor_demo_TB.py` 是**小米电机**的供应商参考脚本，**不是 EL05 协议**。
+> 它仅作为 `python-can` + SocketCAN 的链路参考保留。EL05 协议实现见下方。
+
+### 2. EL05 协议一致性
 
 EL05/RobStride CAN 协议在以下三处实现，参数必须一致：
 
@@ -47,9 +63,62 @@ EL05/RobStride CAN 协议在以下三处实现，参数必须一致：
 | `bringup/el05/el05_motor_menu.py` | Python | 硬件调测 |
 | `bringup/el05/protocol_selftest.py` | Python | 协议自检 |
 
-同步项：CAN ID 构造 (`buildExtId`)、float↔uint 映射范围 (P_MIN=-12.57, P_MAX=12.57, V_MIN=-50, V_MAX=50, T_MIN=-6, T_MAX=6, KP_MAX=500, KD_MAX=5)、comm_type 常量 (0x01-0x12)、参数索引 (0x7005, 0x7019, 0x701B, 0x3022)。
+同步项：CAN ID 构造 (`buildExtId`)、float↔uint 映射范围 (P_MIN=-12.57, P_MAX=12.57, V_MIN=-50, V_MAX=50, T_MIN=-6, T_MAX=6, KP_MAX=500, KD_MAX=5)、comm_type 常量 (0x00-0x19)、参数索引 (0x7005, 0x7019, 0x701B, 0x3022)。
 
-### 2. 控制回路同步 (C++ ↔ Python)
+完整 comm_type 列表：
+
+| 类型 | 值 | 用途 | 实现 |
+|------|-----|------|------|
+| COMM_GET_DEVICE_ID | 0x00 | 获取设备 ID (广播扫描) | ✅ scan 工具 |
+| COMM_CONTROL | 0x01 | 运控模式控制指令 | ✅ |
+| COMM_STATUS | 0x02 | 电机反馈数据 | ✅ |
+| COMM_ENABLE | 0x03 | 电机使能运行 | ✅ |
+| COMM_STOP | 0x04 | 电机停止运行 | ✅ |
+| COMM_SET_ZERO | 0x06 | 设置机械零位 | ✅ |
+| COMM_READ_PARAM | 0x11 | 单个参数读取 | ✅ |
+| COMM_WRITE_PARAM | 0x12 | 单个参数写入 | ✅ |
+| COMM_FAULT_FEEDBACK | 0x15 | 故障反馈帧 | - |
+| COMM_SAVE_PARAM | 0x16 | 数据保存 | - |
+| COMM_BAUD_RATE | 0x17 | 波特率修改 | - |
+| COMM_ACTIVE_REPORT | 0x18 | 主动上报 | - |
+| COMM_PROTOCOL_SWITCH | 0x19 | 协议切换 (CANopen↔私有) | - |
+
+### 3. CAN 硬件 (USB-CAN 适配器)
+
+生产链路：
+
+```
+Orange Pi 5 → USB 2.0 Hub (带外部供电) → 4× CANable (gs_usb, candleLight)
+                                           → can0/can1/can2/can3 → EL05 电机
+```
+
+| 属性 | 值 |
+|------|-----|
+| 适配器芯片 | candleLight / CANable (gs_usb 驱动) |
+| USB VID/PID | `1d50:606f` |
+| 内核模块 | `gs_usb` |
+| CAN 接口数 | 4 (can0-can3) |
+| 供电 | **USB Hub 必须带外部供电** (Orange Pi 5 供电不足) |
+
+启动 CAN 接口：
+```bash
+sudo modprobe gs_usb can can_raw
+sudo ./scripts/setup_can.sh can0 1000000
+sudo ./scripts/setup_can.sh can1 1000000
+sudo ./scripts/setup_can.sh can2 1000000
+sudo ./scripts/setup_can.sh can3 1000000
+```
+
+只读扫描全部电机 (不使能、不写参数)：
+```bash
+python3 bringup/scan_motors_readonly.py
+```
+
+> ⚠️ 新电机出厂 ID 为 **127** (0x7F)，不是 1-12。需要用 Windows 上位机 EDULITE-TOOL
+> 逐个改为 OpenDoge 标准 ID。未改 ID 的电机 `scan_motors_readonly.py` 仍能发现
+> 但 `opendoge_deploy` 不会识别。
+
+### 4. 控制回路同步 (C++ ↔ Python)
 
 `src/opendoge_deploy/src/main.cpp` 和 `test/deploy_mujoco.py` 实现相同的控制回路。任何修改必须双向同步：
 
@@ -60,7 +129,7 @@ EL05/RobStride CAN 协议在以下三处实现，参数必须一致：
 - PD 增益逻辑 (阻尼/斜坡/Active/LowGain)
 - `last_action` 的 clamp 语义
 
-### 3. 电机映射 (不可变)
+### 5. 电机映射 (不可变)
 
 ```
 can0: FL_hip/1, FL_thigh/2, FL_calf/3
@@ -69,14 +138,14 @@ can2: RL_hip/7, RL_thigh/8, RL_calf/9
 can3: RR_hip/10, RR_thigh/11, RR_calf/12
 ```
 
-### 4. 默认站立姿态 (必须匹配训练 keyframe)
+### 6. 默认站立姿态 (必须匹配训练 keyframe)
 
 ```
 前腿: hip=0, thigh=0.5, calf=-1.3
 后腿: hip=0, thigh=0.7, calf=-1.3
 ```
 
-### 5. 观测格式 (49 维，无 privileged info)
+### 7. 观测格式 (49 维，无 privileged info)
 
 ```
 gyro(3) + neg_gravity(3) + dof_pos_diff(12) + dof_vel(12)

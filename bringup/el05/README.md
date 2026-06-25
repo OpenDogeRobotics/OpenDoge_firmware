@@ -1,14 +1,27 @@
 # EL05 Interactive Motor Tools
 
-`el05_motor_menu.py` is an interactive hardware menu for OpenDoge EL05 motors.
+`el05_motor_menu.py` is an interactive hardware menu for OpenDoge EL05 (RobStride/灵足) motors.
 
 It is intentionally EL05 / RobStride only. The PD02 tool package was used only as a reference for menu shape and operator workflow; OpenDoge does not use LK/Lingkong motors.
+
+> ⚠️ `bringup/usb2can/mi_motor_demo_TB.py` 是**小米电机**的供应商参考脚本，与 EL05 协议不同，保留不动仅作链路参考。
+
+## 电机出厂默认值
+
+新电机 **CAN ID 默认为 127 (0x7F)**，不是 OpenDoge 标准 ID 1-12。
+需要使用 Windows 上位机 **EDULITE-TOOL** (灵足官网 robstride.com 下载) 逐个改为标准 ID。
+
+先用只读工具发现所有电机 (含出厂 ID):
+```bash
+python3 bringup/scan_motors_readonly.py --all-ids
+```
 
 ## Prerequisites
 
 Bring up the production USB2CAN signal forwarding board as a Linux SocketCAN interface:
 
 ```bash
+sudo modprobe gs_usb can can_raw
 sudo ./scripts/setup_can.sh can0 1000000
 ```
 
@@ -18,10 +31,10 @@ From the workspace root:
 ./bringup/el05/el05_motor_menu.py --channel can0 --master-id 0xfd
 ```
 
-Optional custom motor ID order:
+Optional custom motor ID order (factory default ID included):
 
 ```bash
-./bringup/el05/el05_motor_menu.py --channel can0 --ids 1,2,3,4,5,6,7,8,9,10,11,12
+./bringup/el05/el05_motor_menu.py --channel can3 --ids 10,11,12,127
 ```
 
 ## Menu
