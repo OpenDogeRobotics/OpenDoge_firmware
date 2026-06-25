@@ -1,0 +1,45 @@
+# OpenDoge Standing Pose Calibration Log
+# Timestamp: 2026-06-26T04:44:27.025682
+# zero_sta=1 (-π~π), prone-position zero reference
+
+Joint                motorID defaultPos  liveMechPos capturedMechPos direction     offset       source
+----------------------------------------------------------------------------------------------------
+  FL_hip_joint             1    +0.0000      +0.2103        +0.2809        +1     0.2809         实测锁定
+  FL_thigh_joint           2    +0.5000      +0.2823        +1.4295        +1     0.9295         实测锁定
+  FL_calf_joint            3    -1.3000      +1.3914        +0.2112        +1     1.5112         实测锁定
+  FR_hip_joint             4    +0.0000          N/A            N/A        +1     0.0600     MuJoCo仿真
+  FR_thigh_joint           5    +0.5000          N/A            N/A        +1    -0.7615     MuJoCo仿真
+  FR_calf_joint            6    -1.3000          N/A            N/A        +1     2.2624     MuJoCo仿真
+  RL_hip_joint             7    +0.0000          N/A            N/A        +1    -0.2610     MuJoCo仿真
+  RL_thigh_joint           8    +0.7000          N/A            N/A        +1    -1.1358     MuJoCo仿真
+  RL_calf_joint            9    -1.3000          N/A            N/A        +1     2.6275     MuJoCo仿真
+  RR_hip_joint            10    +0.0000          N/A            N/A        +1     0.2610     MuJoCo仿真
+  RR_thigh_joint          11    +0.7000          N/A            N/A        +1    -1.1358     MuJoCo仿真
+  RR_calf_joint           12    -1.3000          N/A            N/A        +1     2.6275     MuJoCo仿真
+
+# Deploy config snippet (copy to opendoge_deploy.conf):
+
+joint.FL_hip_joint.direction=1
+joint.FL_hip_joint.offset=0.2809
+joint.FL_thigh_joint.direction=1
+joint.FL_thigh_joint.offset=0.9295
+joint.FL_calf_joint.direction=1
+joint.FL_calf_joint.offset=1.5112
+joint.FR_hip_joint.direction=1
+joint.FR_hip_joint.offset=0.0600
+joint.FR_thigh_joint.direction=1
+joint.FR_thigh_joint.offset=-0.7615
+joint.FR_calf_joint.direction=1
+joint.FR_calf_joint.offset=2.2624
+joint.RL_hip_joint.direction=1
+joint.RL_hip_joint.offset=-0.2610
+joint.RL_thigh_joint.direction=1
+joint.RL_thigh_joint.offset=-1.1358
+joint.RL_calf_joint.direction=1
+joint.RL_calf_joint.offset=2.6275
+joint.RR_hip_joint.direction=1
+joint.RR_hip_joint.offset=0.2610
+joint.RR_thigh_joint.direction=1
+joint.RR_thigh_joint.offset=-1.1358
+joint.RR_calf_joint.direction=1
+joint.RR_calf_joint.offset=2.6275
