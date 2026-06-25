@@ -41,9 +41,9 @@ done
 | 文件 | 用途 | 状态 |
 |------|------|------|
 | `mi_motor_demo_TB.py` | **小米电机**供应商参考脚本, 仅作 `python-can` + SocketCAN 链路参考 | 📦 保留不动 |
-| `../scan_motors_readonly.py` | EL05 只读电机扫描 (不使能, 不写参数) | ✅ 生产使用 |
-| `../el05/el05_motor_menu.py` | EL05 交互式电机调测菜单 | ✅ 生产使用 |
-| `../el05/protocol_selftest.py` | EL05 协议自检 | ✅ 生产使用 |
+| `../hardware/motor/scan_motors_readonly.py` | EL05 只读电机扫描 (不使能, 不写参数) | ✅ 生产使用 |
+| `../hardware/motor/el05_motor_menu.py` | EL05 交互式电机调测菜单 | ✅ 生产使用 |
+| `../hardware/motor/protocol_selftest.py` | EL05 协议自检 | ✅ 生产使用 |
 
 > ⚠️ **重要**: `mi_motor_demo_TB.py` 是**小米电机**协议，与 OpenDoge 使用的 **EL05 (RobStride/灵足)** 电机不同。
 > 两个协议 CAN 帧结构相似但参数范围不同 (EL05: P_MIN=-12.57, 小米: P_MIN=-12.5)。
@@ -69,7 +69,7 @@ kd:       0..5
 ### 只读扫描 (安全操作)
 
 ```bash
-python3 bringup/scan_motors_readonly.py
+python3 hardware/motor/scan_motors_readonly.py
 ```
 
 此脚本：
@@ -80,7 +80,7 @@ python3 bringup/scan_motors_readonly.py
 ### 交互式调测 (谨慎操作)
 
 ```bash
-./bringup/el05/el05_motor_menu.py --channel can3 --master-id 0xfd
+./hardware/motor/el05_motor_menu.py --channel can3 --master-id 0xfd
 ```
 
 此工具可执行使能、停止、置零等**写操作**，使用前确保电机处于安全状态。

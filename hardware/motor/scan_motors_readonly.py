@@ -18,17 +18,17 @@ EL05 只读电机扫描工具 — 不发送任何控制指令 (不使能、不�
     # ... can1/can2/can3 同理
 
   扫描全部四通道标准 ID (1-12):
-    python3 bringup/scan_motors_readonly.py
+    python3 hardware/motor/scan_motors_readonly.py
 
   扫描全部 ID 含出厂默认 (1-127):
-    python3 bringup/scan_motors_readonly.py --all-ids
+    python3 hardware/motor/scan_motors_readonly.py --all-ids
 
   只扫指定通道/电机:
-    python3 bringup/scan_motors_readonly.py --channel can3
-    python3 bringup/scan_motors_readonly.py --channel can3 --ids 10,11,12
+    python3 hardware/motor/scan_motors_readonly.py --channel can3
+    python3 hardware/motor/scan_motors_readonly.py --channel can3 --ids 10,11,12
 
   扫描后被动监听 3 秒 (捕获实时状态帧):
-    python3 bringup/scan_motors_readonly.py --listen 3
+    python3 hardware/motor/scan_motors_readonly.py --listen 3
 
   常见问题:
     - 无响应: 检查电机 24V 供电、CAN 终端电阻 (120Ω)、USB Hub 外部供电

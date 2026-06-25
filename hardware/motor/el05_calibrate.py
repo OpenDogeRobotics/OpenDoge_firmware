@@ -15,20 +15,20 @@ OpenDoge 电机标定工具 — 计算 JointCalibration.offset 补偿值。
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
   交互式 (逐关节标定, 推荐首次使用):
-    python3 bringup/el05/el05_calibrate.py --channel can0
+    python3 hardware/motor/el05_calibrate.py --channel can0
 
   批量模式 (机器人已处于站立姿态):
-    python3 bringup/el05/el05_calibrate.py --channel can0 --batch
+    python3 hardware/motor/el05_calibrate.py --channel can0 --batch
 
   注意: 此工具只读位置不控制电机, 需人工将关节摆到参考角度后按 Enter 读数。
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
 
   # Verify existing calibration
-  python3 bringup/el05/el05_calibrate.py --channel can0 --verify
+  python3 hardware/motor/el05_calibrate.py --channel can0 --verify
 
   # Dry-run (no CAN — validates logic)
-  python3 bringup/el05/el05_calibrate.py --dry-run
+  python3 hardware/motor/el05_calibrate.py --dry-run
 
 Output is printed to stdout in key=value format ready to append to
 opendoge_deploy.conf.

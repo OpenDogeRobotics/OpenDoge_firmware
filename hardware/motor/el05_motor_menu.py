@@ -13,8 +13,8 @@ OpenDoge EL05/RobStride 电机交互调测菜单 (SocketCAN)。
   前置条件: CAN 接口已启动 (sudo ip link set up canX), 电机已上电
 
   启动菜单:
-    python3 bringup/el05/el05_motor_menu.py --channel can3
-    python3 bringup/el05/el05_motor_menu.py --channel can3 --master-id 0xfd
+    python3 hardware/motor/el05_motor_menu.py --channel can3
+    python3 hardware/motor/el05_motor_menu.py --channel can3 --master-id 0xfd
 
   只读操作 (安全, 不发控制指令):
     0: 发现电机    — 扫描总线, 列出所有电机及其位置/速度/模式
