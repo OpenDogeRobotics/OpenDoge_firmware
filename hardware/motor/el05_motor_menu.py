@@ -586,7 +586,7 @@ def cmd_simple(bus: El05Bus, motors: list[tuple[str, int]], action: str) -> None
         "mode_motion": "设为运控模式",
     }
     warnings = {
-        "zero": "⚠️ 设置机械零位将改变电机参考零点, 请确认关节处于目标零位!",
+        "zero": "⚠️ 设置机械零位 (需运控模式, 标零后自动保存到 Flash)",
         "clear": "⚠️ 将清除所选电机的故障状态。",
         "mode_motion": "⚠️ 将把电机切换到运控模式。",
     }
@@ -611,9 +611,13 @@ def cmd_simple(bus: El05Bus, motors: list[tuple[str, int]], action: str) -> None
         elif action == "clear":
             status = bus.stop(motor_id, clear_fault=True)
         elif action == "zero":
-            bus.stop(motor_id)
-            time.sleep(0.05)
+            # Section 4.2.5: SET_ZERO requires CSP or motion-control mode.
+            # DO NOT stop() first — that exits motion mode and blocks zeroing.
             status = bus.set_zero(motor_id)
+            if status is not None:
+                # COMM_SAVE_PARAM (0x16) to persist zero across power cycles
+                bus.send(COMM_SAVE_PARAM, motor_id, [1, 2, 3, 4, 5, 6, 7, 8])
+                time.sleep(0.03)
         elif action == "mode_motion":
             bus.stop(motor_id)
             time.sleep(0.05)

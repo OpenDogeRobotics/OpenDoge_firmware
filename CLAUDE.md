@@ -331,23 +331,50 @@ sudo ./scripts/setup_vcan.sh can0 can1 can2 can3
 |------|--------|------|
 | 2026-06-26 | CAN 接口: 4× CANable (gs_usb), can0-3 全部 UP @ 1 Mbps, LOWER_UP ✅ | ✅ |
 | 2026-06-26 | 电机 ID 验证: 12/12 EL05 全部在线, ID 1-12 正确, 通道分配正确, 运控模式, 无故障 | ✅ |
-| - | 电机零位标定: 在站立姿态下执行 COMM_SET_ZERO (尚未完成) | ⬜ |
+| 2026-06-26 | 电机零位标定: 趴伏姿态标零 + offset 补偿 (MuJoCo 仿真趴伏角→校准偏移) | ✅ |
 | - | IMU 数据流验证: `/tmp/opendoge_imu.state` 正常输出 | ⬜ |
 | - | Xbox 手柄数据流验证: `/tmp/opendoge_command.state` 正常输出 | ⬜ |
 | - | C++ deploy 空策略 dry-run: `--policy-backend none --real` 无 CAN 错误 | ⬜ |
 | - | C++ deploy PD 站立: 位置控制模式, 12 电机稳定站立 | ⬜ |
 | - | C++ deploy RL 行走: ONNX 推理闭环, 稳定行走 | ⬜ |
 
-### 上次扫描结果 (2026-06-26)
+### 电机零位标定方案 (2026-06-26)
+
+采用 **趴伏标零 + 补偿角** 方案，避免抬起机器人的风险。
+
+**原理**: 机器人在平地趴伏时对所有电机执行 COMM_SET_ZERO (mechPos=0)。
+此时 URDF 关节角 = 趴伏角 (MuJoCo 仿真计算)。
+通过 `calibration.offset = -prone_angle` 使 `logicalPosition(0) = prone_angle`，
+从而 `motorPosition(default_pos) = default_pos - prone_angle` 正确映射站立姿态。
+
+**关键发现**: EL05 手册 4.2.5 节 — "csp 和运控模式下可以标零，pp 模式标零会屏蔽"。
+`el05_motor_menu.py` 选项 9 原先 `stop()` → `set_zero()` 的流程会破坏运控模式导致标零失效。
+**修复**: 移除 stop(), 直接发 COMM_SET_ZERO + COMM_SAVE_PARAM (0x16) 持久化。
+
+**MuJoCo 趴伏仿真角度 & 校准 offset** (calc_zero_offset.py):
+
+| 关节 | 趴伏角 (rad) | **offset** | 关节 | 趴伏角 (rad) | **offset** |
+|------|-------------|-----------|------|-------------|-----------|
+| FL_hip | +0.0600 | **-0.0600** | FR_hip | -0.0600 | **+0.0600** |
+| FL_thigh | +0.7615 | **-0.7615** | FR_thigh | +0.7615 | **-0.7615** |
+| FL_calf | -2.2623 | **+2.2623** | FR_calf | -2.2624 | **+2.2624** |
+| RL_hip | +0.2610 | **-0.2610** | RR_hip | -0.2610 | **+0.2610** |
+| RL_thigh | +1.1358 | **-1.1358** | RR_thigh | +1.1358 | **-1.1358** |
+| RL_calf | -2.6275 | **+2.6275** | RR_calf | -2.6275 | **+2.6275** |
+
+⚠️ 仿真中 RL/RR hip 和 thigh 触及关节限位，实机趴伏姿态可能有偏差。
+首次使能 (PD 站立) 前需将机器人抬离地面，LowGain 模式验证。
+
+### 上次扫描结果 (2026-06-26, 标零后)
 
 ```
-can0 (FL): ID=1(hip +4.49) 2(thigh +3.33) 3(calf +1.14) — 全部运控/无故障
-can1 (FR): ID=4(hip +1.18) 5(thigh +6.13) 6(calf +6.26) — 全部运控/无故障
-can2 (RL): ID=7(hip +3.11) 8(thigh +3.10) 9(calf +2.64) — 全部运控/无故障
-can3 (RR): ID=10(hip +0.02) 11(thigh +3.28) 12(calf +5.56) — 全部运控/无故障
+can0 (FL): ID=1(hip +0.0000) 2(thigh +0.0000) 3(calf +0.0000) — 全部运控/无故障 ✅
+can1 (FR): ID=4(hip +0.0000) 5(thigh +0.0000) 6(calf +0.0000) — 全部运控/无故障 ✅
+can2 (RL): ID=7(hip +0.0000) 8(thigh +0.0000) 9(calf +0.0000) — 全部运控/无故障 ✅
+can3 (RR): ID=10(hip +0.0000) 11(thigh -0.0000) 12(calf -0.0017) — 全部运控/无故障 ✅
 ```
 
-> 当前位置不是默认站立角，电机零位尚未标定。下一步需要将机器人摆至站立姿态后执行机械置零。
+> 电机零位标定完成。下一步: 将机器人抬至站立姿态, LowGain 模式 PD 站立验证。
 
 ## 修改指南
 
